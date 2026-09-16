@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#151821">
+<title>Registratore del Quaderno</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #fff; --ink: #1b1d22; --dim: #6b6f7a; --line: #e2e0da;
+    --accent: #b4442f; --ok: #2e7d5b; --warn: #8a6d1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151821; --card: #1d212c; --ink: #e9e8e4; --dim: #9aa0ad; --line: #2c313d;
+      --accent: #e2694f; --ok: #5fbf92; --warn: #d9b45f; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .sub { color: var(--dim); font-size: 14px; margin: 0 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .timer { font: 600 42px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 1px; }
+  .timer.live { color: var(--accent); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; font-weight: 600; border-radius: 11px; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); padding: 13px 18px; cursor: pointer; min-height: 48px; }
+  button.big { flex: 1 1 100%; font-size: 18px; padding: 18px; }
+  button.rec { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  button.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .live { min-height: 130px; max-height: 42vh; overflow: auto; margin-top: 14px;
+    border-top: 1px dashed var(--line); padding-top: 12px; font-size: 15px; }
+  .live div { margin-bottom: 7px; }
+  .t { color: var(--dim); font: 13px ui-monospace, Menlo, monospace; margin-right: 7px; }
+  .interim { color: var(--dim); font-style: italic; }
+  .gap { color: var(--warn); font-size: 13px; }
+  .hint { color: var(--dim); font-size: 14px; }
+  .notice { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent);
+    padding: 11px 13px; border-radius: 0 10px 10px 0; font-size: 14px; margin-bottom: 12px; }
+  .notice.err { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .link { display: flex; align-items: center; gap: 10px; font-size: 14px; padding: 11px 14px; }
+  .link i { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .link.on i { background: var(--ok); }
+  .link.on { color: var(--ok); }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
+    background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 11px; font-size: 15px;
+    opacity: 0; transition: .2s; pointer-events: none; max-width: 90vw; text-align: center; }
+  #toast.on { opacity: 1; transform: translateX(-50%); }
+</style>
+</head>
+<body>
+
+<h1>Registratore del Quaderno</h1>
+<p class="sub" id="sub">Registra la lezione e trascrivila in diretta: audio e testo tornano nel Quaderno da soli.</p>
+
+<div id="warn"></div>
+<div class="card link" id="link"><i></i><span id="linkText">Quaderno non collegato</span></div>
+
+<div class="card">
+  <div class="timer" id="timer">00:00</div>
+  <p class="hint" id="count" style="margin:4px 0 14px">Nessun segmento</p>
+  <div class="row">
+    <button class="big rec" id="start">&#9679; Registra</button>
+    <button class="big stop" id="stop" hidden>&#9632; Ferma</button>
+  </div>
+  <div class="live" id="live"><span class="hint">Premi Registra: qui compare il testo mentre parli. Puoi passare al Quaderno (Lavagna, appunti) mentre registri: l'audio continua anche con questa scheda in secondo piano.</span></div>
+</div>
+
+<div class="card" id="out" hidden>
+  <div class="row">
+    <button class="primary" id="send" hidden>Invia al Quaderno</button>
+    <button id="copy">Copia la trascrizione</button>
+    <button id="audio">Salva l'audio</button>
+    <button id="txt">Salva il testo</button>
+    <button id="drop">Scarta</button>
+  </div>
+  <p class="hint" id="outHint" style="margin:12px 0 0"></p>
+</div>
+
+<div class="card">
+  <p class="hint" style="margin:0 0 8px"><strong>Perch&eacute; questa pagina esiste</strong></p>
+  <p class="hint" style="margin:0">Il Quaderno gira dentro un frame di claude.ai che non riceve il permesso del microfono (la Permissions Policy del sito lo concede solo a claude.ai stesso). Questa pagina invece &egrave; una pagina principale su un dominio suo: qui il microfono si chiede normalmente. Aprila dal Quaderno con &ldquo;Registra dal tablet&rdquo; e i segmenti trascritti gli arrivano in diretta; a fine registrazione anche l'audio.</p>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const qs = new URLSearchParams(location.search);
+  const lessonId = qs.get('lesson') || '';
+  const lessonTitle = qs.get('title') || '';
+  // stesse parti da 10 minuti del Quaderno: l'archivio accetta file fino a 20 MB (32 kbit/s ≈ 2,4 MB a parte)
+  const PART_MS = 10 * 60 * 1000;
+  const META = 'quaderno-recorder-draft', DB_NAME = 'quaderno-recorder';
+  const st = { active: false, t0: 0, dur: 0, segments: [], interim: '', mr: null, stream: null, sr: null, mime: '',
+               parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
+               srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [],
+               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false };
+
+  const two = n => String(n).padStart(2, '0');
+  const fmt = s => { s = Math.max(0, Math.round(s)); return two(Math.floor(s / 60)) + ':' + two(s % 60); };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let toastTimer;
+  function toast(msg) {
+    const t = $('#toast'); t.textContent = msg; t.classList.add('on');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 3400);
+  }
+
+  // stessi casi distinti dell'app: senza questa distinzione ogni errore sembra un permesso negato
+  function micError(e) {
+    const name = (e && e.name) || '', msg = (e && e.message) || '';
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return 'Nessun microfono su questo dispositivo.';
+    if (name === 'NotReadableError' || name === 'TrackStartError') return 'Microfono occupato da un\'altra app: chiudila e riprova.';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      if (/permissions? policy|feature policy|not allowed in this document/i.test(msg)) return 'Questa pagina non ha il permesso del microfono: aprila come pagina principale, non dentro un\'altra app.';
+      if (/by system/i.test(msg)) return 'Microfono bloccato dalle impostazioni del sistema: consenti l\'accesso al browser.';
+      return 'Permesso negato: tocca l\'icona accanto all\'indirizzo e consenti il microfono, poi ricarica.';
+    }
+    return 'Microfono non disponibile: ' + (msg || name || 'errore sconosciuto');
+  }
+
+  function checkEnv() {
+    const w = [];
+    if (!window.isSecureContext) w.push({ err: true, html: 'Questa pagina non &egrave; servita in HTTPS: il browser non concede il microfono. Serve un indirizzo https:// (localhost va bene solo per le prove).' });
+    if (!SR) w.push({ err: false, html: 'Questo browser non ha il riconoscimento vocale: la registrazione audio funziona, la trascrizione in diretta no. Su Android usa Chrome.' });
+    $('#warn').innerHTML = w.map(x => '<div class="notice' + (x.err ? ' err' : '') + '">' + x.html + '</div>').join('');
+  }
+
+  // ----- audio a prova di crash: ogni pezzo va in IndexedDB appena arriva -----
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('chunks', { keyPath: 'seq' });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbRun(mode, fn) {
+    let db = null;
+    try { db = await idb(); return await new Promise((res, rej) => { const tx = db.transaction('chunks', mode); const rq = fn(tx.objectStore('chunks')); tx.oncomplete = () => res(rq && rq.result); tx.onerror = () => rej(tx.error); }); }
+    catch (e) { return null; }
+    finally { try { db && db.close(); } catch (e) {} }
+  }
+  const idbPut = rec => idbRun('readwrite', s => s.put(rec));
+  const idbAll = async () => (await idbRun('readonly', s => s.getAll())) || [];
+  const idbClear = () => idbRun('readwrite', s => s.clear());
+  function partsFromChunks(rows) {
+    const byPart = new Map();
+    for (const r of rows.sort((a, b) => a.seq - b.seq)) { if (!byPart.has(r.part)) byPart.set(r.part, { at: r.partStart, last: r.t, chunks: [], type: r.blob.type }); const p = byPart.get(r.part); p.chunks.push(r.blob); p.last = r.t; }
+    return [...byPart.values()].sort((a, b) => a.at - b.at).map(p => ({ blob: new Blob(p.chunks, { type: p.type || 'audio/webm' }), durationSec: Math.max(1, Math.round((p.last - p.at) / 1000)), at: p.at }));
+  }
+  const saveMeta = extra => { try { localStorage.setItem(META, JSON.stringify(Object.assign({ lessonId, lessonTitle, t0: st.t0, segments: st.segments, gaps: st.gaps, savedAt: Date.now(), active: st.active, dur: st.dur }, extra || {}))); } catch (e) {} };
+  const readMeta = () => { try { return JSON.parse(localStorage.getItem(META)); } catch (e) { return null; } };
+  const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
+
+  // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
+  const OPENER_OK = o => /^https:\/\/[a-z0-9-]+\.frame\.claudeusercontent\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
+  // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
+  const peer = () => (window.opener && !window.opener.closed) ? window.opener : (window.parent !== window ? window.parent : null);
+  function send(type, data) {
+    const p = peer(); if (!p) return false;
+    // finché il Quaderno non ha risposto, verso l'apritore vanno solo i messaggi senza contenuto (hello, ping)
+    if (!st.quadernoOrigin && type !== 'hello' && type !== 'ping') return false;
+    try { p.postMessage(Object.assign({ source: 'quaderno-recorder', type, lessonId, t0: st.t0 }, data || {}), st.quadernoOrigin || '*'); return true; }
+    catch (e) { return false; }
+  }
+  addEventListener('message', ev => {
+    const d = ev.data; if (!d || d.source !== 'quaderno' || !OPENER_OK(ev.origin)) return;
+    if (d.type === 'ack') {
+      st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; renderLink();
+      if (d.resend && st.active && st.segments.length) send('segments', { segments: st.segments });
+      // registrazione finita senza che lo stop sia arrivato (Quaderno ricaricato): la rimando; quelle recuperate le manda l'utente
+      if (d.resend && !st.active && !st.sent && !st.recovered && (st.parts.length || st.segments.length)) deliver();
+      if (!st.active) renderOut();
+    }
+    // salvata nel Quaderno: la copia locale non serve più (resta in memoria per "Salva l'audio" finché la scheda è aperta)
+    if (d.type === 'saved') { st.sent = true; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); }
+  });
+  function renderLink() {
+    const el = $('#link'); el.classList.toggle('on', st.linked);
+    $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli'
+      : (peer() ? 'In attesa del Quaderno… (se non si collega, a fine registrazione usa Copia e Salva)' : 'Aperto da solo: a fine registrazione copia la trascrizione e salva l\'audio, poi caricali nel Quaderno');
+  }
+  send('hello', { active: false });
+  // il ping tiene vivo il collegamento e lo ricostruisce se il Quaderno è stato ricaricato
+  setInterval(() => { if (!send('ping', { active: st.active, segments: st.segments.length })) { if (st.linked && !peer()) { st.linked = false; renderLink(); } } }, 10000);
+
+  // ----- interfaccia -----
+  function renderLive() {
+    const last = st.segments.slice(-5).map(s => '<div><span class="t">' + fmt(s.t) + '</span>' + esc(s.text) + '</div>').join('');
+    const gap = st.gapFrom && st.active && Date.now() - st.gapFrom > 8000 ? '<div class="gap">Riconoscimento vocale interrotto da ' + fmt((st.gapFrom - st.t0) / 1000) + ': l\'audio continua, riprovo…</div>' : '';
+    const live = $('#live');
+    live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap) || '<span class="hint">In ascolto&hellip;</span>';
+    live.scrollTop = live.scrollHeight;
+    $('#count').textContent = (st.segments.length ? st.segments.length + (st.segments.length === 1 ? ' segmento' : ' segmenti') : (st.active ? 'In ascolto…' : 'Nessun segmento'))
+      + (st.gaps.length ? ' · ' + st.gaps.length + (st.gaps.length === 1 ? ' buco nella trascrizione' : ' buchi nella trascrizione') : '');
+  }
+  function renderOut() {
+    const has = st.parts.length || st.segments.length;
+    $('#out').hidden = st.active || !has;
+    const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
+    $('#outHint').textContent = st.sent ? 'Il Quaderno ha salvato trascrizione e audio: puoi chiudere questa scheda.'
+      : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione e salva l\'audio, poi nel Quaderno "Carica audio" e "Salva come segmenti".'
+      : 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio, e incolla la trascrizione nella casella sotto la registrazione → Salva come segmenti.';
+  }
+  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); }
+
+  // ----- registrazione a parti -----
+  function startPart() {
+    const opts = { audioBitsPerSecond: 32000 }; if (st.mime) opts.mimeType = st.mime;
+    let mr; try { mr = new MediaRecorder(st.stream, opts); } catch (e) { mr = new MediaRecorder(st.stream); }
+    const chunks = [], partStart = Date.now(), part = st.partIndex++;
+    mr.ondataavailable = ev => { if (ev.data && ev.data.size) { chunks.push(ev.data); idbPut({ seq: st.seq++, part, partStart, t: Date.now(), blob: ev.data }); } };
+    mr.onstop = () => { const blob = new Blob(chunks, { type: mr.mimeType || st.mime || 'audio/webm' }); if (blob.size) st.parts.push({ blob, durationSec: Math.round((Date.now() - partStart) / 1000), at: partStart }); st.parts.sort((a, b) => a.at - b.at); if (mr._done) mr._done(); };
+    mr.start(5000); st.mr = mr;
+  }
+  function rotatePart() { if (!st.active || !st.mr) return; const mr = st.mr; mr._done = () => {}; try { mr.stop(); } catch (e) {} startPart(); }
+
+  // ----- riconoscimento vocale che si rialza da solo (in secondo piano su mobile si interrompe spesso) -----
+  function startSR() {
+    if (!SR || !st.active || st.srBlocked || st.srRunning) return;
+    const sr = new SR(); sr.lang = 'it-IT'; sr.continuous = true; sr.interimResults = true;
+    sr.onstart = () => { st.srRunning = true; if (st.gapFrom) { if (Date.now() - st.gapFrom > 8000) st.gaps.push({ from: st.gapFrom, to: Date.now() }); st.gapFrom = 0; renderLive(); } };
+    sr.onresult = ev => {
+      let interim = ''; st.srFails = 0;
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        if (r.isFinal) {
+          const text = r[0].transcript.trim();
+          if (text) {
+            // il riconoscimento chiude la frase con qualche secondo di ritardo: si scala indietro
+            const t = Math.max(0, Math.round((Date.now() - st.t0) / 1000) - Math.min(8, Math.round(text.length / 14)));
+            st.segments.push({ t, text }); saveMeta(); send('segment', { segment: { t, text } });
+          }
+        } else interim += r[0].transcript;
+      }
+      st.interim = interim; renderLive();
+    };
+    sr.onerror = ev => {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { st.srBlocked = true; toast('Riconoscimento vocale non consentito da questo browser: l\'audio viene comunque registrato.'); }
+      else if (ev.error !== 'no-speech' && ev.error !== 'aborted') st.srFails++;
+    };
+    sr.onend = () => {
+      st.srRunning = false; st.interim = '';
+      if (st.sr !== sr || !st.active || st.srBlocked) return;
+      if (!st.gapFrom) st.gapFrom = Date.now();
+      scheduleSR(Math.min(5000, 400 * Math.pow(2, st.srFails)));
+    };
+    try { sr.start(); } catch (e) { st.srRunning = false; scheduleSR(1000); }
+    st.sr = sr;
+  }
+  function scheduleSR(delay) { clearTimeout(st.srRestartT); st.srRestartT = setTimeout(startSR, delay || 400); }
+
+  async function start() {
+    if (st.active) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+    catch (e) { toast(micError(e)); return; }
+    await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
+    Object.assign(st, { active: true, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now() });
+    st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+    try { startPart(); }
+    catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
+    st.partTimer = setInterval(rotatePart, PART_MS);
+    saveMeta();
+    startSR();
+    try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
+    st.timer = setInterval(tick, 500);
+    $('#start').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
+    $('#timer').classList.add('live');
+    send('start', {});
+    renderLive();
+  }
+
+  async function stop() {
+    if (!st.active) return;
+    st.active = false;
+    clearInterval(st.timer); clearInterval(st.partTimer); clearTimeout(st.srRestartT);
+    if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
+    st.srRunning = false; st.interim = '';
+    await new Promise(r => { const mr = st.mr; if (!mr) return r(); mr._done = r; try { mr.stop(); } catch (e) { r(); } });
+    st.stream.getTracks().forEach(t => t.stop());
+    try { await st.wake?.release?.(); } catch (e) {}
+    st.wake = null;
+    st.dur = Math.round((Date.now() - st.t0) / 1000);
+    $('#timer').classList.remove('live');
+    $('#start').hidden = false; $('#stop').hidden = true;
+    saveMeta();
+    renderLive();
+    const sent = deliver();
+    renderOut();
+    toast(sent ? 'Registrazione finita: la sto passando al Quaderno…' : st.segments.length ? 'Registrazione finita: ' + st.segments.length + ' segmenti' : 'Registrazione finita');
+  }
+  // trascrizione e audio insieme al Quaderno; il Blob passa per postMessage senza copie su disco
+  function deliver() {
+    if (!st.linked || st.sent) return false;
+    return send('stop', { durationSec: st.dur, segments: st.segments, gaps: st.gaps, parts: st.parts.map(p => ({ blob: p.blob, durationSec: p.durationSec })) });
+  }
+
+  // il Quaderno rilegge il testo una riga per frase: è il formato che si aspetta "Salva come segmenti"
+  const asText = () => st.segments.map(s => s.text).join('\n');
+  function download(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  const stamp = () => new Date(st.t0 || Date.now()).toLocaleString('sv').replace(/[: ]/g, '-').slice(0, 16);
+  const ext = p => (/mp4/.test(p.blob.type) ? '.m4a' : '.webm');
+
+  $('#start').onclick = start;
+  $('#stop').onclick = stop;
+  $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
+  $('#copy').onclick = async () => {
+    const text = asText();
+    if (!text) return toast('Non c\'è nessuna trascrizione da copiare');
+    try { await navigator.clipboard.writeText(text); toast('Trascrizione copiata: incollala nel Quaderno'); }
+    catch (e) { download(new Blob([text], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: ho salvato il file di testo'); }
+  };
+  $('#txt').onclick = () => {
+    if (!st.segments.length) return toast('Non c\'è nessuna trascrizione da salvare');
+    download(new Blob([asText()], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt');
+  };
+  $('#audio').onclick = () => {
+    if (!st.parts.length) return toast('Non c\'è nessun audio da salvare');
+    // le parti sono file separati (ognuna con la propria intestazione): non si possono incollare in uno solo
+    st.parts.forEach((p, i) => setTimeout(() => download(p.blob, 'lezione-' + stamp() + (st.parts.length > 1 ? '-parte' + (i + 1) : '') + ext(p)), i * 600));
+    if (st.parts.length > 1) toast('Salvo ' + st.parts.length + ' file: caricali nel Quaderno in ordine');
+  };
+  $('#drop').onclick = async () => {
+    if (!confirm('Scartare questa registrazione? Audio e trascrizione non si recuperano più.')) return;
+    await idbClear(); clearMeta(); Object.assign(st, { segments: [], parts: [], gaps: [], sent: false, recovered: false });
+    $('#out').hidden = true; $('#timer').textContent = '00:00'; renderLive(); $('#live').innerHTML = '<span class="hint">Premi Registra per una nuova registrazione.</span>';
+  };
+
+  addEventListener('beforeunload', e => { if (st.active) { e.preventDefault(); e.returnValue = ''; } });
+  // in secondo piano il riconoscimento può fermarsi e lo schermo spegnersi: al ritorno si riparte
+  document.addEventListener('visibilitychange', async () => {
+    if (!st.active || document.visibilityState !== 'visible') return;
+    if (!st.wake) { try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {} }
+    if (!st.srRunning) scheduleSR(100);
+  });
+
+  // ----- avvio: recupero di una registrazione interrotta -----
+  async function recover() {
+    const m = readMeta(); if (!m) return;
+    const rows = await idbAll();
+    if (!(m.segments || []).length && !rows.length) { clearMeta(); return; }
+    st.segments = m.segments || []; st.gaps = m.gaps || []; st.t0 = m.t0 || Date.now(); st.recovered = true;
+    st.parts = partsFromChunks(rows);
+    st.dur = m.active ? Math.round((rows.length ? Math.max(...rows.map(r => r.t)) - st.t0 : (m.savedAt - st.t0)) / 1000) : (m.dur || 0);
+    $('#timer').textContent = fmt(st.dur);
+    const what = [st.parts.length ? 'audio recuperato (' + fmt(st.parts.reduce((a, p) => a + p.durationSec, 0)) + ')' : 'senza audio', st.segments.length + ' segmenti trascritti'].join(', ');
+    $('#warn').insertAdjacentHTML('beforeend', '<div class="notice recov">' + (m.active ? 'Una registrazione si era interrotta' : 'Registrazione precedente') + (m.lessonTitle ? ' (' + esc(m.lessonTitle) + ')' : '') + ': ' + what + '. Inviala al Quaderno o salvala, oppure scartala.</div>');
+    renderLive(); renderOut();
+  }
+  checkEnv();
+  if (lessonTitle) $('#sub').textContent = 'Lezione: ' + lessonTitle;
+  renderLink();
+  recover();
+})();
+</script>
+</body>
+</html>
