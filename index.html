@@ -193,8 +193,11 @@
   function renderLive() {
     const last = st.segments.slice(-5).map(s => '<div><span class="t">' + fmt(s.t) + '</span>' + esc(s.text) + '</div>').join('');
     const gap = st.gapFrom && st.active && Date.now() - st.gapFrom > 8000 ? '<div class="gap">Riconoscimento vocale interrotto da ' + fmt((st.gapFrom - st.t0) / 1000) + ': l\'audio continua, riprovo…</div>' : '';
+    // su alcuni Android il riconoscimento non parte mentre si registra l'audio: dopo un po' senza testo, dillo
+    const noTrans = st.active && SR && !st.srBlocked && !st.segments.length && !st.interim && (Date.now() - st.t0) > 12000
+      ? '<div class="gap">La trascrizione in diretta non sta arrivando su questo browser (capita su alcuni Android mentre si registra l\'audio). L\'audio viene comunque registrato e salvato nella lezione: il testo lo puoi aggiungere dopo.</div>' : '';
     const live = $('#live');
-    live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap) || '<span class="hint">In ascolto&hellip;</span>';
+    live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans) || '<span class="hint">In ascolto&hellip;</span>';
     live.scrollTop = live.scrollHeight;
     $('#count').textContent = (st.segments.length ? st.segments.length + (st.segments.length === 1 ? ' segmento' : ' segmenti') : (st.active ? 'In ascolto…' : 'Nessun segmento'))
       + (st.gaps.length ? ' · ' + st.gaps.length + (st.gaps.length === 1 ? ' buco nella trascrizione' : ' buchi nella trascrizione') : '');
