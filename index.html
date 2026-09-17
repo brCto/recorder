@@ -60,7 +60,8 @@
 
 <div class="card">
   <div class="timer" id="timer">00:00</div>
-  <p class="hint" id="count" style="margin:4px 0 14px">Nessun segmento</p>
+  <p class="hint" id="count" style="margin:4px 0 2px">Nessun segmento</p>
+  <p class="hint" id="saved" style="margin:0 0 14px;color:var(--ok)"></p>
   <div class="row">
     <button class="big rec" id="start">&#9679; Registra (audio + testo)</button>
     <button class="big" id="startLive" title="Registra l'audio e lo trascrive sul dispositivo mentre parli: un solo microfono, funziona anche su Android. Serve potenza: su tablet il testo può restare un po' indietro.">&#129504; Registra + trascrivi in diretta (sul dispositivo)</button>
@@ -124,12 +125,12 @@
   const lessonId = qs.get('lesson') || '';
   const lessonTitle = qs.get('title') || '';
   // stesse parti da 10 minuti del Quaderno: l'archivio accetta file fino a 20 MB (32 kbit/s ≈ 2,4 MB a parte)
-  const PART_MS = 10 * 60 * 1000;
+  const PART_MS = 5 * 60 * 1000; // parti audio complete ogni 5 min: checkpoint più frequenti, file più piccoli
   const META = 'quaderno-recorder-draft', DB_NAME = 'quaderno-recorder';
   const st = { active: false, t0: 0, dur: 0, segments: [], interim: '', mr: null, stream: null, sr: null, mime: '',
                parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
                srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [], srBaseLen: 0, srFinalT: [],
-               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full', trans: 'browser', liveStatus: '', live: null };
+               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full', trans: 'browser', liveStatus: '', live: null, lastSaved: 0, saveTimer: null };
   const only = qs.get('only'); // 'audio' = solo registrazione, 'text' = solo trascrizione, altrimenti entrambe
 
   const two = n => String(n).padStart(2, '0');
@@ -175,7 +176,7 @@
     catch (e) { return null; }
     finally { try { db && db.close(); } catch (e) {} }
   }
-  const idbPut = rec => idbRun('readwrite', s => s.put(rec));
+  const idbPut = rec => idbRun('readwrite', s => s.put(rec)).then(v => { st.lastSaved = Date.now(); return v; });
   const idbAll = async () => (await idbRun('readonly', s => s.getAll())) || [];
   const idbClear = () => idbRun('readwrite', s => s.clear());
   function partsFromChunks(rows) {
@@ -183,7 +184,7 @@
     for (const r of rows.sort((a, b) => a.seq - b.seq)) { if (!byPart.has(r.part)) byPart.set(r.part, { at: r.partStart, last: r.t, chunks: [], type: r.blob.type }); const p = byPart.get(r.part); p.chunks.push(r.blob); p.last = r.t; }
     return [...byPart.values()].sort((a, b) => a.at - b.at).map(p => ({ blob: new Blob(p.chunks, { type: p.type || 'audio/webm' }), durationSec: Math.max(1, Math.round((p.last - p.at) / 1000)), at: p.at }));
   }
-  const saveMeta = extra => { try { localStorage.setItem(META, JSON.stringify(Object.assign({ lessonId, lessonTitle, t0: st.t0, segments: st.segments, gaps: st.gaps, savedAt: Date.now(), active: st.active, dur: st.dur }, extra || {}))); } catch (e) {} };
+  const saveMeta = extra => { try { localStorage.setItem(META, JSON.stringify(Object.assign({ lessonId, lessonTitle, t0: st.t0, segments: st.segments, gaps: st.gaps, savedAt: Date.now(), active: st.active, dur: st.dur }, extra || {}))); st.lastSaved = Date.now(); } catch (e) {} };
   const readMeta = () => { try { return JSON.parse(localStorage.getItem(META)); } catch (e) { return null; } };
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
@@ -246,7 +247,14 @@
           ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
           : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.');
   }
-  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); }
+  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); }
+  function renderSaved() {
+    const el = $('#saved'); if (!el) return;
+    if (!st.active || !st.lastSaved) { el.textContent = ''; return; }
+    const d = new Date(st.lastSaved);
+    const what = st.mode === 'text' ? 'Trascrizione salvata' : 'Audio salvato (recuperabile se si chiude)';
+    el.textContent = '✓ ' + what + ' · ultimo alle ' + two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+  }
 
   // ----- registrazione a parti -----
   function startPart() {
@@ -348,7 +356,10 @@
     $('#start').hidden = true; $('#startLive').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
     $('#timer').classList.add('live');
     st.timer = setInterval(tick, 500);
-    renderLive();
+    // checkpoint periodico: aggiorna il salvataggio recuperabile ogni 30s anche in silenzio
+    clearInterval(st.saveTimer); st.saveTimer = setInterval(() => { saveMeta(); renderSaved(); }, 30000);
+    st.lastSaved = Date.now(); saveMeta();
+    renderLive(); renderSaved();
   }
   // trans: 'browser' = riconoscimento del browser (bene su desktop), 'offline' = modello sul dispositivo (Android)
   async function start(trans) {
@@ -386,7 +397,8 @@
   async function stop() {
     if (!st.active) return;
     st.active = false;
-    clearInterval(st.timer); clearInterval(st.partTimer); clearTimeout(st.srRestartT);
+    clearInterval(st.timer); clearInterval(st.partTimer); clearTimeout(st.srRestartT); clearInterval(st.saveTimer);
+    renderSaved();
     if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
     st.srRunning = false; st.interim = '';
     if (st.live) { $('#stop').textContent = '■ Ferma (finisco la trascrizione…)'; await stopLivePipe(); $('#stop').innerHTML = '&#9632; Ferma'; }
