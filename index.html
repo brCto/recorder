@@ -88,7 +88,7 @@
   </div>
   <div class="row">
     <label class="big" for="offFile" style="text-align:center;cursor:pointer">&#128193; Scegli il file audio</label>
-    <input id="offFile" type="file" accept="audio/*,video/mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.webm,.aac,.amr,.3gp" hidden>
+    <input id="offFile" type="file" multiple accept="audio/*,video/mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.webm,.aac,.amr,.3gp" hidden>
   </div>
   <p class="hint" id="offState" style="margin:10px 0 0"></p>
   <div class="live" id="offOut" hidden></div>
@@ -130,7 +130,8 @@
   const st = { active: false, t0: 0, dur: 0, segments: [], interim: '', mr: null, stream: null, sr: null, mime: '',
                parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
                srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [], srBaseLen: 0, srFinalT: [],
-               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full', trans: 'browser', liveStatus: '', live: null, lastSaved: 0, saveTimer: null };
+               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full', trans: 'browser', liveStatus: '', live: null, lastSaved: 0, saveTimer: null,
+               savedId: null, trDone: true, srNoText: null, job: null };
   const only = qs.get('only'); // 'audio' = solo registrazione, 'text' = solo trascrizione, altrimenti entrambe
 
   const two = n => String(n).padStart(2, '0');
@@ -209,8 +210,16 @@
       if (!st.active) renderOut();
     }
     // salvata nel Quaderno: la copia locale non serve più (resta in memoria per "Salva l'audio" finché la scheda è aperta)
-    if (d.type === 'saved') { st.sent = true; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); }
+    if (d.type === 'saved') { st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed(); }
+    // il Quaderno chiede di trascrivere una registrazione caricata lì: passa i file audio, oppure gli indirizzi da cui scaricarli
+    if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } startJob(d); }
   });
+  // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
+  function flushTranscribed(done) {
+    if (done === true) st.trDone = true;
+    if (!st.savedId || !st.linked) return;
+    send('transcribed', { recId: st.savedId, segments: st.segments, done: !!st.trDone });
+  }
   function renderLink() {
     const el = $('#link'); el.classList.toggle('on', st.linked);
     $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli'
@@ -229,7 +238,7 @@
       ? (st.mode === 'text'
           ? '<div class="gap">Il riconoscimento vocale non sta producendo testo su questo browser: qui non è disponibile. Conviene registrare con l\'app registratore del telefono (molte hanno la trascrizione integrata) e caricare l\'audio nel Quaderno.</div>'
           : '<div class="gap">La trascrizione in diretta non arriva mentre si registra l\'audio (tipico su Android). L\'audio viene comunque salvato nella lezione. Per avere il testo dal vivo, ferma e usa <strong>Solo trascrizione</strong> (senza audio).</div>') : '';
-    const liveStatus = st.active && st.liveStatus ? '<div class="gap">' + esc(st.liveStatus) + '</div>' : '';
+    const liveStatus = st.liveStatus ? '<div class="gap">' + esc(st.liveStatus) + '</div>' : '';
     const live = $('#live');
     live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans + liveStatus) || (st.liveStatus ? '<span class="hint">' + esc(st.liveStatus) + '</span>' : '<span class="hint">In ascolto&hellip;</span>');
     live.scrollTop = live.scrollHeight;
@@ -241,11 +250,11 @@
     $('#out').hidden = st.active || !has;
     const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
     $('#audio').hidden = !st.parts.length; // in "solo trascrizione" non c'è audio da salvare
-    $('#outHint').textContent = st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
+    $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
       : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione' + (st.parts.length ? ' e salva l\'audio' : '') + ', poi nel Quaderno "Carica audio" e/o "Salva come segmenti".'
       : (st.parts.length
           ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
-          : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.');
+          : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.'));
   }
   function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); }
   function renderSaved() {
@@ -276,7 +285,7 @@
     const sr = new SR(); sr.lang = 'it-IT'; sr.continuous = true; sr.interimResults = true;
     sr.onstart = () => { st.srRunning = true; if (st.gapFrom) { if (Date.now() - st.gapFrom > 8000) st.gaps.push({ from: st.gapFrom, to: Date.now() }); st.gapFrom = 0; renderLive(); } };
     sr.onresult = ev => {
-      st.srFails = 0;
+      st.srFails = 0; clearTimeout(st.srNoText);
       // si ricostruiscono i finali dall'intera lista, non si accodano: su Android un "final" spesso
       // cresce includendo tutto il detto, e accodarlo farebbe ricomparire la riga intera a ogni parola
       const res = ev.results, finals = []; let interim = '';
@@ -305,51 +314,89 @@
     st.sr = sr;
   }
   function scheduleSR(delay) { clearTimeout(st.srRestartT); st.srRestartT = setTimeout(startSR, delay || 400); }
+  // su Android il riconoscimento del browser non parte mentre si registra l'audio (si contendono il microfono):
+  // dopo 15 s senza una parola si passa al modello sul dispositivo, che lavora sullo stesso flusso audio
+  function srFallback() {
+    if (!st.active || st.mode !== 'full' || st.trans !== 'browser' || st.segments.length || st.interim) return;
+    st.srBlocked = true; clearTimeout(st.srRestartT);
+    if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
+    st.srRunning = false; st.gapFrom = 0; st.trans = 'offline';
+    toast('Il riconoscimento del browser non risponde mentre registro: trascrivo sul dispositivo.');
+    startLivePipe(st.stream, liveModel());
+  }
 
-  // ----- trascrizione in diretta sul dispositivo (stesso audio del microfono, un solo accesso) -----
-  const LIVE_MIN_SEC = 5; // accumula almeno 5s prima di dare un pezzo al modello (contesto + meno lavoro)
+  // ----- trascrizione in diretta sul dispositivo: stesso microfono della registrazione (un solo accesso) -----
+  // L'audio si accumula e va al modello a finestre di ~15 s, tagliate nel punto più silenzioso degli ultimi
+  // secondi (così non si spezzano le parole). I pezzi in coda si smaltiscono anche dopo lo stop: l'audio
+  // parte subito verso il Quaderno, il testo lo raggiunge appena pronto.
+  const LIVE_SR = 16000, LIVE_WIN = 15, LIVE_MAXWIN = 28, LIVE_TAIL = 4;
+  // senza WebGPU il modello "base" non regge il tempo reale su tablet: in diretta si usa "tiny"
+  const liveModel = () => (navigator.gpu ? $('#offModel').value : 'Xenova/whisper-tiny');
   async function startLivePipe(stream, model) {
-    const L = { buf: [], pending: 0, consumed: 0, busy: false, on: true, ac: null, sp: null, src: null, timer: null };
-    st.live = L;
+    const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null };
+    st.live = L; st.trDone = false;
     st.liveStatus = 'Carico il modello di trascrizione (solo la prima volta, qualche decina di MB)…'; renderLive();
-    let pipe; try { pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) { st.liveStatus = 'Scarico il modello ' + Math.round(p.progress) + '%'; renderLive(); } }); }
-    catch (e) { st.liveStatus = ''; toast('Trascrizione in diretta non disponibile: ' + (e.message || e) + '. L\'audio viene comunque registrato.'); return; }
-    if (!L.on) return; // fermato durante il caricamento
+    try { L.pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) { st.liveStatus = 'Scarico il modello ' + Math.round(p.progress) + '%'; renderLive(); } }); }
+    catch (e) { st.liveStatus = ''; if (st.live === L) { st.live = null; st.trDone = true; } toast('Trascrizione sul dispositivo non disponibile: ' + (e.message || e) + '. L\'audio viene comunque registrato.'); renderLive(); return; }
+    if (!L.on) { if (st.live === L) { st.live = null; st.trDone = true; } return; } // fermato durante il caricamento
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      L.ac = new AC({ sampleRate: 16000 });
+      L.ac = new AC({ sampleRate: LIVE_SR });
       L.src = L.ac.createMediaStreamSource(stream);
       L.sp = L.ac.createScriptProcessor(4096, 1, 1);
-      L.sp.onaudioprocess = ev => { if (!L.on) return; const ch = ev.inputBuffer.getChannelData(0); L.buf.push(new Float32Array(ch)); L.pending += ch.length; };
+      L.sp.onaudioprocess = ev => { if (!L.on) return; const ch = ev.inputBuffer.getChannelData(0); L.buf.push(new Float32Array(ch)); L.pending += ch.length; if (L.pending >= LIVE_SR * LIVE_WIN) cutWindow(L, false); };
       L.src.connect(L.sp); L.sp.connect(L.ac.destination); // uscita muta: lo ScriptProcessor non copia l'input
-    } catch (e) { st.liveStatus = ''; toast('Trascrizione in diretta non avviata: ' + (e.message || e)); return; }
-    st.liveStatus = 'Trascrivo mentre parli…'; renderLive();
-    L.timer = setInterval(() => livePump(pipe), 800);
+    } catch (e) { st.liveStatus = ''; st.live = null; st.trDone = true; toast('Trascrizione in diretta non avviata: ' + (e.message || e)); renderLive(); return; }
+    st.liveStatus = 'Trascrivo sul dispositivo mentre parli: il testo arriva con qualche decina di secondi di ritardo.'; renderLive();
+    L.timer = setInterval(() => livePump(L), 700);
   }
-  async function livePump(pipe, flush) {
-    const L = st.live; if (!L) return;
-    if (L.busy || !L.pending) return;
-    if (!flush && L.pending < 16000 * LIVE_MIN_SEC) return;
+  // stacca una finestra dal buffer e la mette in coda; il taglio cade nel punto più silenzioso degli ultimi secondi
+  function cutWindow(L, all) {
+    if (!L.pending) return;
+    const audio = new Float32Array(L.pending); let o = 0; for (const a of L.buf) { audio.set(a, o); o += a.length; }
+    let cut = audio.length;
+    if (!all && audio.length > LIVE_SR * (LIVE_WIN - LIVE_TAIL)) {
+      const from = Math.max(0, audio.length - LIVE_SR * LIVE_TAIL), step = LIVE_SR / 10; let best = Infinity;
+      for (let i = from; i + step <= audio.length; i += step) { let e = 0; for (let j = i; j < i + step; j++) e += audio[j] * audio[j]; if (e < best) { best = e; cut = i + step / 2; } }
+      cut = Math.floor(cut);
+    }
+    if (audio.length > LIVE_SR * LIVE_MAXWIN) cut = Math.min(cut, LIVE_SR * LIVE_MAXWIN);
+    const piece = audio.slice(0, cut), rest = audio.subarray(cut);
+    L.queue.push({ audio: piece, startT: L.consumed / LIVE_SR }); L.consumed += piece.length;
+    L.buf = rest.length ? [new Float32Array(rest)] : []; L.pending = rest.length;
+  }
+  async function livePump(L) {
+    if (L.busy || !L.queue.length) return;
     L.busy = true;
-    const arr = L.buf; L.buf = []; const n = L.pending; L.pending = 0;
-    const audio = new Float32Array(n); let o = 0; for (const a of arr) { audio.set(a, o); o += a.length; }
-    const startT = Math.round(L.consumed / 16000); L.consumed += n;
+    const { audio, startT } = L.queue.shift();
     try {
-      const out = await pipe(audio, { language: 'italian', task: 'transcribe', chunk_length_s: 30, return_timestamps: false });
-      const text = String((out && out.text) || '').trim();
-      if (text && L.on) { st.segments.push({ t: Math.max(0, startT), text }); saveMeta(); send('segments', { segments: st.segments }); renderLive(); }
-    } catch (e) { /* salta il pezzo, l'audio resta salvato */ }
+      const out = await L.pipe(audio, { language: 'italian', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
+      const segs = segsFromOutput(out, startT);
+      if (segs.length) { st.segments = st.segments.concat(segs); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
+    } catch (e) { /* pezzo saltato: l'audio resta comunque nella registrazione */ }
     L.busy = false;
+    if (!st.active) {
+      const left = L.queue.length;
+      st.liveStatus = left ? 'Finisco la trascrizione: ' + left + (left === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…' : '';
+      if (!left) { clearInterval(L.timer); if (st.live === L) st.live = null; flushTranscribed(true); toast('Trascrizione completata'); if (st.job && st.job.waiting && st.job.files) runJob(st.job); }
+      renderLive(); renderOut();
+    }
   }
+  const segsFromOutput = (out, offset) => {
+    const chunks = (out && out.chunks && out.chunks.length) ? out.chunks : [{ timestamp: [0, 0], text: (out && out.text) || '' }];
+    return chunks.map(c => ({ t: Math.max(0, Math.round((offset || 0) + ((c.timestamp && c.timestamp[0]) || 0))), text: String(c.text || '').trim() })).filter(s => s.text);
+  };
+  // ferma la cattura del microfono; la coda si trascrive comunque e arriva al Quaderno come aggiornamento
   async function stopLivePipe() {
     const L = st.live; if (!L) return; L.on = false;
-    clearInterval(L.timer);
     try { L.sp && (L.sp.onaudioprocess = null); } catch (e) {}
     try { L.src && L.src.disconnect(); L.sp && L.sp.disconnect(); } catch (e) {}
-    // ultimo pezzo rimasto nel buffer
-    if (asr && L.pending) { L.busy = false; try { await livePump(asr, true); } catch (e) {} }
     try { L.ac && await L.ac.close(); } catch (e) {}
-    st.live = null; st.liveStatus = '';
+    if (!L.pipe) { clearInterval(L.timer); st.live = null; st.liveStatus = ''; st.trDone = true; return; }
+    cutWindow(L, true);
+    if (!L.queue.length && !L.busy) { clearInterval(L.timer); st.live = null; st.liveStatus = ''; st.trDone = true; return; }
+    const n = L.queue.length + (L.busy ? 1 : 0);
+    st.liveStatus = 'Finisco la trascrizione: ' + n + (n === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…';
   }
 
   function beginUi() {
@@ -375,7 +422,8 @@
     catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
     st.partTimer = setInterval(rotatePart, PART_MS);
     saveMeta();
-    if (trans === 'offline') startLivePipe(stream, $('#offModel').value); else startSR();
+    st.trDone = true; st.savedId = null;
+    if (trans === 'offline') startLivePipe(stream, liveModel()); else { startSR(); clearTimeout(st.srNoText); st.srNoText = setTimeout(srFallback, 15000); }
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
     beginUi();
     send('start', {});
@@ -386,7 +434,7 @@
     if (st.active) return;
     if (!SR) { toast('Questo browser non ha il riconoscimento vocale: usa Chrome, oppure registra l\'audio.'); return; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
-    Object.assign(st, { active: true, mode: 'text', stream: null, mr: null, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now() });
+    Object.assign(st, { active: true, mode: 'text', stream: null, mr: null, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), trDone: true, savedId: null });
     saveMeta();
     startSR();
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
@@ -401,7 +449,9 @@
     renderSaved();
     if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
     st.srRunning = false; st.interim = '';
-    if (st.live) { $('#stop').textContent = '■ Ferma (finisco la trascrizione…)'; await stopLivePipe(); $('#stop').innerHTML = '&#9632; Ferma'; }
+    clearTimeout(st.srNoText);
+    if (st.live) await stopLivePipe();
+    if (!st.live) st.trDone = true;
     await new Promise(r => { const mr = st.mr; if (!mr) return r(); mr._done = r; try { mr.stop(); } catch (e) { r(); } });
     if (st.stream) st.stream.getTracks().forEach(t => t.stop());
     try { await st.wake?.release?.(); } catch (e) {}
@@ -506,10 +556,11 @@
   }
   // ----- trascrizione offline sul dispositivo (Whisper via transformers.js): un solo microfono,
   //       niente conflitto con la registrazione — si trascrive il file dopo, senza limiti di durata -----
-  let asr = null, asrModel = null, offBusy = false;
+  let asr = null, asrModel = null, offBusy = false, offSegs = [];
   const offState = m => { const el = $('#offState'); if (el) el.textContent = m; };
   async function loadASR(model, onProg) {
     if (asr && asrModel === model) return asr;
+    if (location.hostname === 'localhost' && window.__fakeASR) { asr = window.__fakeASR; asrModel = model; return asr; } // solo per le prove locali
     asr = null; asrModel = null;
     const mod = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
     const opts = { progress_callback: onProg };
@@ -528,32 +579,96 @@
     const r = await off.startRendering();
     return { audio: r.getChannelData(0), durationSec: Math.round(buf.duration) };
   }
-  async function transcribeFile(file, model) {
-    if (offBusy) return; offBusy = true;
-    $('#offOut').hidden = true; $('#offActions').hidden = true; $('#offOut').innerText = '';
-    try {
-      offState('Preparo l\'audio…');
-      let dec; try { dec = await decode16k(file); } catch (e) { offState('Non riesco a leggere questo file audio: prova un formato diverso (m4a, mp3, wav, webm). ' + (e.message || '')); offBusy = false; return; }
-      if (dec.durationSec > 3600) offState('Registrazione lunga (' + fmt(dec.durationSec) + '): la trascrizione può richiedere parecchio, tieni la scheda aperta…');
-      const pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) offState('Scarico il modello ' + (p.file ? p.file.split('/').pop() : '') + ' ' + Math.round(p.progress) + '% (solo la prima volta)'); });
-      offState('Trascrivo sul dispositivo… il tempo cresce con la durata. Puoi lasciare la scheda aperta.');
-      const t0 = Date.now();
+  const byName = (a, b) => new Intl.Collator('it', { numeric: true, sensitivity: 'base' }).compare(a.name || '', b.name || '');
+  // più file = una registrazione spezzettata: si trascrivono in ordine e i tempi proseguono da un file all'altro
+  async function transcribeBlobs(blobs, model, onProgress) {
+    const pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) onProgress('scarico il modello ' + (p.file ? p.file.split('/').pop() + ' ' : '') + Math.round(p.progress) + '% (solo la prima volta)', null); });
+    const segments = []; let offset = 0;
+    for (let i = 0; i < blobs.length; i++) {
+      const tag = blobs.length > 1 ? 'file ' + (i + 1) + ' di ' + blobs.length + ': ' : '';
+      onProgress(tag + 'preparo l\'audio…', null);
+      let dec; try { dec = await decode16k(blobs[i]); } catch (e) { throw new Error('non riesco a leggere ' + (blobs[i].name ? '"' + blobs[i].name + '"' : 'il file ' + (i + 1)) + ': prova un formato diverso (m4a, mp3, wav, webm)'); }
+      if (dec.durationSec > 3600) onProgress(tag + 'registrazione lunga (' + fmt(dec.durationSec) + '): la trascrizione può richiedere parecchio, tieni la scheda aperta…', null);
+      else onProgress(tag + 'trascrivo ' + fmt(dec.durationSec) + ' di audio sul dispositivo… tieni la scheda aperta.', null);
       const out = await pipe(dec.audio, { language: 'italian', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
-      const chunks = (out && out.chunks && out.chunks.length) ? out.chunks : [{ timestamp: [0, 0], text: (out && out.text) || '' }];
-      st.segments = chunks.map(c => ({ t: Math.max(0, Math.round((c.timestamp && c.timestamp[0]) || 0)), text: String(c.text || '').trim() })).filter(s => s.text);
-      st.mode = 'file'; st.parts = [];
-      if (!st.segments.length) { offState('Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.'); offBusy = false; return; }
-      $('#offOut').hidden = false; $('#offOut').innerText = st.segments.map(s => s.text).join('\n');
-      $('#offActions').hidden = false;
-      offState('Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + st.segments.length + ' segmenti. Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).');
-    } catch (e) { offState('Trascrizione non riuscita: ' + (e && (e.message || e)) + '. Se è la prima volta, controlla la rete per lo scaricamento del modello.'); }
+      segments.push(...segsFromOutput(out, offset));
+      offset += dec.durationSec;
+      onProgress(null, segments);
+    }
+    return { segments, durationSec: offset };
+  }
+  function showOff(segs, msg) {
+    offSegs = segs;
+    $('#offOut').hidden = !segs.length; $('#offOut').innerText = segs.map(s => s.text).join('\n');
+    $('#offActions').hidden = !segs.length;
+    offState(msg);
+  }
+  // file scelti qui, senza richiesta del Quaderno: trascrizione da copiare o da inviare come registrazione senza audio
+  async function transcribeFiles(files, model) {
+    if (offBusy) { toast('Aspetta che finisca la trascrizione in corso'); return; }
+    offBusy = true; showOff([], 'Preparo l\'audio…');
+    files = files.slice().sort(byName);
+    const t0 = Date.now();
+    try {
+      const res = await transcribeBlobs(files, model, (msg, partial) => { if (msg) offState(msg); if (partial) showOff(partial, $('#offState').textContent); });
+      if (!res.segments.length) { showOff([], 'Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.'); offBusy = false; return; }
+      if (!st.active) { st.segments = res.segments; st.mode = 'file'; st.parts = []; st.sent = false; st.dur = res.durationSec; st.t0 = Date.now(); renderOut(); }
+      showOff(res.segments, 'Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + res.segments.length + ' segmenti' + (files.length > 1 ? ' da ' + files.length + ' file' : '') + '. ' + (st.linked && !st.active ? 'Premi "Invia al Quaderno" qui sopra, oppure copia il testo.' : 'Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).'));
+    } catch (e) { showOff([], 'Trascrizione non riuscita: ' + (e && (e.message || e)) + '. Se è la prima volta, controlla la rete per lo scaricamento del modello.'); }
     offBusy = false;
   }
-  const offText = () => st.mode === 'file' ? st.segments.map(s => s.text).join('\n') : '';
-  $('#offFile').onchange = e => { const f = e.target.files[0]; if (f) transcribeFile(f, $('#offModel').value); e.target.value = ''; };
+  // ----- richiesta del Quaderno: trascrivere una registrazione caricata lì -----
+  const jobLabel = j => (j.title ? j.title + (j.name ? ' · ' + j.name : '') : (j.name || 'registrazione'));
+  async function startJob(d) {
+    const job = { recId: d.recId, lessonId: d.lessonId || lessonId, title: d.title || lessonTitle, name: d.name || '', files: null, urls: Array.isArray(d.urls) ? d.urls.filter(Boolean) : null, running: false, waiting: false };
+    if (Array.isArray(d.files) && d.files.length) job.files = d.files.map(f => (f && f.blob instanceof Blob) ? Object.assign(f.blob, f.name && !f.blob.name ? { name: f.name } : {}) : f).filter(b => b instanceof Blob && b.size);
+    // stessa richiesta ripetuta (il Quaderno la rimanda finché non ha conferma): non si riparte da capo
+    if (st.job && st.job.recId === job.recId && (st.job.running || (st.job.files && !job.files))) { send('transcribing', { recId: job.recId }); return; }
+    st.job = job; send('transcribing', { recId: job.recId });
+    if (!job.files && job.urls && job.urls.length) {
+      offState('Scarico l\'audio di «' + jobLabel(job) + '» dall\'archivio del Quaderno…');
+      try { const fs = []; for (const u of job.urls) { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); fs.push(await r.blob()); } job.files = fs; }
+      catch (e) { job.files = null; }
+    }
+    if (st.job !== job) return;
+    if (job.files) return runJob(job);
+    // l'audio non è arrivato: si chiedono i file a chi sta davanti al tablet
+    $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showOff([], 'Il Quaderno chiede la trascrizione di «' + jobLabel(job) + '» ma non può passarmi l\'audio: scegli qui gli stessi file (anche più di uno insieme) e il testo torna nel Quaderno da solo.');
+  }
+  async function runJob(job) {
+    if (st.active || (st.live && !st.trDone)) { job.waiting = true; offState('Registrazione in corso: la trascrizione di «' + jobLabel(job) + '» parte appena finisce.'); return; }
+    if (offBusy) { job.waiting = true; offState('Aspetto che finisca la trascrizione in corso, poi tocca a «' + jobLabel(job) + '».'); return; }
+    offBusy = true; job.running = true; job.waiting = false;
+    $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showOff([], '«' + jobLabel(job) + '»: preparo l\'audio…');
+    const blobs = job.files.slice().sort(byName);
+    const t0 = Date.now(); let lastSend = 0;
+    try {
+      const res = await transcribeBlobs(blobs, $('#offModel').value, (msg, partial) => {
+        if (msg) offState('«' + jobLabel(job) + '»: ' + msg);
+        if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false }); } }
+      });
+      const segs = res.segments;
+      const ok = send('transcribed', { recId: job.recId, segments: segs, done: true });
+      if (!segs.length) showOff([], '«' + jobLabel(job) + '»: nessun testo riconosciuto (audio troppo basso o vuoto).');
+      else showOff(segs, '«' + jobLabel(job) + '»: fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + segs.length + ' segmenti' + (ok ? '. Trascrizione inviata al Quaderno: puoi tornare lì.' : '. Quaderno non raggiungibile: copia il testo e incollalo nella scheda Trascrizione.'));
+    } catch (e) {
+      showOff([], '«' + jobLabel(job) + '»: trascrizione non riuscita. ' + (e && (e.message || e)) + '.');
+      send('transcribe-failed', { recId: job.recId, error: String(e && (e.message || e)) });
+    }
+    offBusy = false; job.running = false; if (st.job === job) st.job = null;
+  }
+  const offText = () => offSegs.map(s => s.text).join('\n');
+  $('#offFile').onchange = e => {
+    const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return;
+    if (st.job && !st.job.files && !st.job.running) { st.job.files = fs; runJob(st.job); } else transcribeFiles(fs, $('#offModel').value);
+  };
+  if (qs.get('transcribe')) { showOff([], 'Il Quaderno sta per passarmi l\'audio da trascrivere…'); $('#offlineCard').scrollIntoView({ block: 'start' }); }
   $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
   $('#offTxt').onclick = () => { const t = offText(); if (t) download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); };
 
+  if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR }; // solo per le prove locali
   checkEnv();
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
   applyOnly();
