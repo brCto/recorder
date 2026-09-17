@@ -69,6 +69,10 @@
   <div class="live" id="live"><span class="hint">Premi Registra: qui compare il testo mentre parli. Puoi passare al Quaderno (Lavagna, appunti) mentre registri: l'audio continua anche con questa scheda in secondo piano.<br><br>Se su Android il testo non compare durante la registrazione, prova <strong>Solo trascrizione</strong>: dà il testo dal vivo ma senza salvare l'audio.</span></div>
 </div>
 
+<div class="card" id="splitCard" hidden>
+  <p class="hint" style="margin:0" id="splitLinks"></p>
+</div>
+
 <div class="card" id="out" hidden>
   <div class="row">
     <button class="primary" id="send" hidden>Invia al Quaderno</button>
@@ -100,8 +104,9 @@
   const META = 'quaderno-recorder-draft', DB_NAME = 'quaderno-recorder';
   const st = { active: false, t0: 0, dur: 0, segments: [], interim: '', mr: null, stream: null, sr: null, mime: '',
                parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
-               srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [],
+               srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [], srBaseLen: 0, srFinalT: [],
                linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full' };
+  const only = qs.get('only'); // 'audio' = solo registrazione, 'text' = solo trascrizione, altrimenti entrambe
 
   const two = n => String(n).padStart(2, '0');
   const fmt = s => { s = Math.max(0, Math.round(s)); return two(Math.floor(s / 60)) + ':' + two(s % 60); };
@@ -232,22 +237,26 @@
   // ----- riconoscimento vocale che si rialza da solo (in secondo piano su mobile si interrompe spesso) -----
   function startSR() {
     if (!SR || !st.active || st.srBlocked || st.srRunning) return;
+    // ogni riconoscimento (anche dopo un riavvio) è una "sessione": i suoi risultati finali stanno
+    // sotto st.segments a partire da srBaseLen; i segmenti delle sessioni precedenti restano fissi
+    st.srBaseLen = st.segments.length; st.srFinalT = [];
     const sr = new SR(); sr.lang = 'it-IT'; sr.continuous = true; sr.interimResults = true;
     sr.onstart = () => { st.srRunning = true; if (st.gapFrom) { if (Date.now() - st.gapFrom > 8000) st.gaps.push({ from: st.gapFrom, to: Date.now() }); st.gapFrom = 0; renderLive(); } };
     sr.onresult = ev => {
-      let interim = ''; st.srFails = 0;
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const r = ev.results[i];
-        if (r.isFinal) {
-          const text = r[0].transcript.trim();
-          if (text) {
-            // il riconoscimento chiude la frase con qualche secondo di ritardo: si scala indietro
-            const t = Math.max(0, Math.round((Date.now() - st.t0) / 1000) - Math.min(8, Math.round(text.length / 14)));
-            st.segments.push({ t, text }); saveMeta(); send('segment', { segment: { t, text } });
-          }
-        } else interim += r[0].transcript;
-      }
-      st.interim = interim; renderLive();
+      st.srFails = 0;
+      // si ricostruiscono i finali dall'intera lista, non si accodano: su Android un "final" spesso
+      // cresce includendo tutto il detto, e accodarlo farebbe ricomparire la riga intera a ogni parola
+      const res = ev.results, finals = []; let interim = '';
+      for (let i = 0; i < res.length; i++) { if (res[i].isFinal) { const t = res[i][0].transcript.trim(); if (t) finals.push(t); } else interim += res[i][0].transcript; }
+      const now = Math.round((Date.now() - st.t0) / 1000);
+      const segs = finals.map((text, i) => {
+        // il riconoscimento chiude la frase con qualche secondo di ritardo: il tempo si fissa alla prima comparsa
+        if (st.srFinalT[i] == null) st.srFinalT[i] = Math.max(0, now - Math.min(8, Math.round(text.length / 14)));
+        return { t: st.srFinalT[i], text };
+      });
+      st.segments = st.segments.slice(0, st.srBaseLen).concat(segs);
+      st.interim = interim; saveMeta(); send('segments', { segments: st.segments });
+      renderLive();
     };
     sr.onerror = ev => {
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { st.srBlocked = true; toast('Riconoscimento vocale non consentito da questo browser: l\'audio viene comunque registrato.'); }
@@ -384,8 +393,30 @@
     $('#warn').insertAdjacentHTML('beforeend', '<div class="notice recov">' + (m.active ? 'Una registrazione si era interrotta' : 'Registrazione precedente') + (m.lessonTitle ? ' (' + esc(m.lessonTitle) + ')' : '') + ': ' + what + '. Inviala al Quaderno o salvala, oppure scartala.</div>');
     renderLive(); renderOut();
   }
+  // due pagine separate: ?only=audio (registra) e ?only=text (trascrivi), per tenerle in due schede
+  const withOnly = m => { const u = new URL(location.href); u.searchParams.set('only', m); return u.href; };
+  function applyOnly() {
+    const pref = lessonTitle ? 'Lezione: ' + lessonTitle + ' · ' : '';
+    if (only === 'audio') {
+      $('#startText').style.display = 'none';
+      $('#start').innerHTML = '&#9679; Registra (solo audio)';
+      document.title = 'Registratore audio'; $('#sub').textContent = pref + 'Solo audio (nessuna trascrizione)';
+      $('#live').innerHTML = '<span class="hint">Premi Registra: registra solo l\'audio. Per il testo dal vivo apri l\'altra scheda (solo testo).</span>';
+    } else if (only === 'text') {
+      $('#start').style.display = 'none';
+      $('#startText').innerHTML = 'Aa Trascrivi';
+      document.title = 'Trascrizione'; $('#sub').textContent = pref + 'Solo testo (nessun audio)';
+      $('#live').innerHTML = '<span class="hint">Premi Trascrivi: qui compare il testo mentre parli, senza registrare l\'audio.</span>';
+    } else {
+      $('#splitLinks').innerHTML = 'Su Android non puoi avere audio e testo nella stessa pagina. Puoi tenerli in <strong>due schede</strong>: '
+        + '<a href="' + esc(withOnly('audio')) + '" target="_blank" rel="noopener">📼 solo audio ↗</a> &nbsp;·&nbsp; '
+        + '<a href="' + esc(withOnly('text')) + '" target="_blank" rel="noopener">🅰 solo testo ↗</a><br>Avvia la registrazione in tutte e due; se il tablet lo consente, avrai audio e testo insieme.';
+      $('#splitCard').hidden = false;
+    }
+  }
   checkEnv();
-  if (lessonTitle) $('#sub').textContent = 'Lezione: ' + lessonTitle;
+  if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
+  applyOnly();
   renderLink();
   recover();
 })();
