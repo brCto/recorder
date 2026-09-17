@@ -62,10 +62,11 @@
   <div class="timer" id="timer">00:00</div>
   <p class="hint" id="count" style="margin:4px 0 14px">Nessun segmento</p>
   <div class="row">
-    <button class="big rec" id="start">&#9679; Registra</button>
+    <button class="big rec" id="start">&#9679; Registra (audio + testo)</button>
+    <button class="big" id="startText" title="Avvia solo il riconoscimento vocale, senza registrare l'audio: su Android è l'unico modo perché la trascrizione parta">Aa Solo trascrizione</button>
     <button class="big stop" id="stop" hidden>&#9632; Ferma</button>
   </div>
-  <div class="live" id="live"><span class="hint">Premi Registra: qui compare il testo mentre parli. Puoi passare al Quaderno (Lavagna, appunti) mentre registri: l'audio continua anche con questa scheda in secondo piano.</span></div>
+  <div class="live" id="live"><span class="hint">Premi Registra: qui compare il testo mentre parli. Puoi passare al Quaderno (Lavagna, appunti) mentre registri: l'audio continua anche con questa scheda in secondo piano.<br><br>Se su Android il testo non compare durante la registrazione, prova <strong>Solo trascrizione</strong>: dà il testo dal vivo ma senza salvare l'audio.</span></div>
 </div>
 
 <div class="card" id="out" hidden>
@@ -100,7 +101,7 @@
   const st = { active: false, t0: 0, dur: 0, segments: [], interim: '', mr: null, stream: null, sr: null, mime: '',
                parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
                srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [],
-               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false };
+               linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full' };
 
   const two = n => String(n).padStart(2, '0');
   const fmt = s => { s = Math.max(0, Math.round(s)); return two(Math.floor(s / 60)) + ':' + two(s % 60); };
@@ -195,7 +196,9 @@
     const gap = st.gapFrom && st.active && Date.now() - st.gapFrom > 8000 ? '<div class="gap">Riconoscimento vocale interrotto da ' + fmt((st.gapFrom - st.t0) / 1000) + ': l\'audio continua, riprovo…</div>' : '';
     // su alcuni Android il riconoscimento non parte mentre si registra l'audio: dopo un po' senza testo, dillo
     const noTrans = st.active && SR && !st.srBlocked && !st.segments.length && !st.interim && (Date.now() - st.t0) > 12000
-      ? '<div class="gap">La trascrizione in diretta non sta arrivando su questo browser (capita su alcuni Android mentre si registra l\'audio). L\'audio viene comunque registrato e salvato nella lezione: il testo lo puoi aggiungere dopo.</div>' : '';
+      ? (st.mode === 'text'
+          ? '<div class="gap">Il riconoscimento vocale non sta producendo testo su questo browser: qui non è disponibile. Conviene registrare con l\'app registratore del telefono (molte hanno la trascrizione integrata) e caricare l\'audio nel Quaderno.</div>'
+          : '<div class="gap">La trascrizione in diretta non arriva mentre si registra l\'audio (tipico su Android). L\'audio viene comunque salvato nella lezione. Per avere il testo dal vivo, ferma e usa <strong>Solo trascrizione</strong> (senza audio).</div>') : '';
     const live = $('#live');
     live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans) || '<span class="hint">In ascolto&hellip;</span>';
     live.scrollTop = live.scrollHeight;
@@ -206,9 +209,12 @@
     const has = st.parts.length || st.segments.length;
     $('#out').hidden = st.active || !has;
     const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
-    $('#outHint').textContent = st.sent ? 'Il Quaderno ha salvato trascrizione e audio: puoi chiudere questa scheda.'
-      : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione e salva l\'audio, poi nel Quaderno "Carica audio" e "Salva come segmenti".'
-      : 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio, e incolla la trascrizione nella casella sotto la registrazione → Salva come segmenti.';
+    $('#audio').hidden = !st.parts.length; // in "solo trascrizione" non c'è audio da salvare
+    $('#outHint').textContent = st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
+      : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione' + (st.parts.length ? ' e salva l\'audio' : '') + ', poi nel Quaderno "Carica audio" e/o "Salva come segmenti".'
+      : (st.parts.length
+          ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
+          : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.');
   }
   function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); }
 
@@ -258,13 +264,19 @@
   }
   function scheduleSR(delay) { clearTimeout(st.srRestartT); st.srRestartT = setTimeout(startSR, delay || 400); }
 
+  function beginUi() {
+    $('#start').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
+    $('#timer').classList.add('live');
+    st.timer = setInterval(tick, 500);
+    renderLive();
+  }
   async function start() {
     if (st.active) return;
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
     catch (e) { toast(micError(e)); return; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
-    Object.assign(st, { active: true, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now() });
+    Object.assign(st, { active: true, mode: 'full', stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now() });
     st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
     try { startPart(); }
     catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
@@ -272,11 +284,21 @@
     saveMeta();
     startSR();
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
-    st.timer = setInterval(tick, 500);
-    $('#start').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
-    $('#timer').classList.add('live');
+    beginUi();
     send('start', {});
-    renderLive();
+  }
+  // solo trascrizione: nessun getUserMedia/MediaRecorder, così su Android il riconoscimento vocale
+  // non deve contendersi il microfono con la registrazione (è l'unico modo perché parta)
+  async function startText() {
+    if (st.active) return;
+    if (!SR) { toast('Questo browser non ha il riconoscimento vocale: usa Chrome, oppure registra l\'audio.'); return; }
+    await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
+    Object.assign(st, { active: true, mode: 'text', stream: null, mr: null, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now() });
+    saveMeta();
+    startSR();
+    try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
+    beginUi();
+    toast('Solo trascrizione: parla, il testo compare qui. L\'audio non viene registrato.');
   }
 
   async function stop() {
@@ -286,12 +308,12 @@
     if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
     st.srRunning = false; st.interim = '';
     await new Promise(r => { const mr = st.mr; if (!mr) return r(); mr._done = r; try { mr.stop(); } catch (e) { r(); } });
-    st.stream.getTracks().forEach(t => t.stop());
+    if (st.stream) st.stream.getTracks().forEach(t => t.stop());
     try { await st.wake?.release?.(); } catch (e) {}
     st.wake = null;
     st.dur = Math.round((Date.now() - st.t0) / 1000);
     $('#timer').classList.remove('live');
-    $('#start').hidden = false; $('#stop').hidden = true;
+    $('#start').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
     saveMeta();
     renderLive();
     const sent = deliver();
@@ -316,6 +338,7 @@
   const ext = p => (/mp4/.test(p.blob.type) ? '.m4a' : '.webm');
 
   $('#start').onclick = start;
+  $('#startText').onclick = startText;
   $('#stop').onclick = stop;
   $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
   $('#copy').onclick = async () => {
