@@ -73,6 +73,29 @@
   <p class="hint" style="margin:0" id="splitLinks"></p>
 </div>
 
+<div class="card" id="offlineCard">
+  <p class="hint" style="margin:0 0 10px"><strong>Trascrivi una registrazione (sul dispositivo)</strong><br>
+  Scegli un file audio &mdash; per esempio la registrazione fatta col registratore del telefono, <strong>senza limiti di durata</strong>. La trascrizione avviene qui sul tablet, offline: la prima volta scarica il modello (qualche decina di MB), poi funziona anche senza rete. <strong>Prova prima con una registrazione corta</strong> per vedere velocit&agrave; e qualit&agrave;.</p>
+  <div class="row" style="margin-bottom:10px">
+    <label class="hint" style="display:flex;align-items:center;gap:8px">Modello
+      <select id="offModel" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
+        <option value="Xenova/whisper-tiny">Veloce (tiny)</option>
+        <option value="Xenova/whisper-base" selected>Preciso (base)</option>
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label class="big" for="offFile" style="text-align:center;cursor:pointer">&#128193; Scegli il file audio</label>
+    <input id="offFile" type="file" accept="audio/*,video/mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.webm,.aac,.amr,.3gp" hidden>
+  </div>
+  <p class="hint" id="offState" style="margin:10px 0 0"></p>
+  <div class="live" id="offOut" hidden></div>
+  <div class="row" id="offActions" hidden style="margin-top:10px">
+    <button class="primary" id="offCopy">Copia la trascrizione</button>
+    <button id="offTxt">Salva il testo</button>
+  </div>
+</div>
+
 <div class="card" id="out" hidden>
   <div class="row">
     <button class="primary" id="send" hidden>Invia al Quaderno</button>
@@ -417,6 +440,56 @@
       + (only ? '' : '<br>Avvia la registrazione in tutte e due; se il tablet lo consente, avrai audio e testo insieme.');
     $('#splitCard').hidden = false;
   }
+  // ----- trascrizione offline sul dispositivo (Whisper via transformers.js): un solo microfono,
+  //       niente conflitto con la registrazione — si trascrive il file dopo, senza limiti di durata -----
+  let asr = null, asrModel = null, offBusy = false;
+  const offState = m => { const el = $('#offState'); if (el) el.textContent = m; };
+  async function loadASR(model, onProg) {
+    if (asr && asrModel === model) return asr;
+    asr = null; asrModel = null;
+    const mod = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+    const opts = { progress_callback: onProg };
+    // WebGPU se c'è (molto più veloce); altrimenti WASM
+    try { asr = await mod.pipeline('automatic-speech-recognition', model, { ...opts, device: navigator.gpu ? 'webgpu' : 'wasm' }); }
+    catch (e) { asr = await mod.pipeline('automatic-speech-recognition', model, { ...opts, device: 'wasm' }); }
+    asrModel = model; return asr;
+  }
+  async function decode16k(file) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    let buf; try { buf = await ac.decodeAudioData(await file.arrayBuffer()); } finally { try { ac.close(); } catch (e) {} }
+    const len = Math.max(1, Math.ceil(buf.duration * 16000));
+    const off = new OfflineAudioContext(1, len, 16000);
+    const s = off.createBufferSource(); s.buffer = buf; s.connect(off.destination); s.start();
+    const r = await off.startRendering();
+    return { audio: r.getChannelData(0), durationSec: Math.round(buf.duration) };
+  }
+  async function transcribeFile(file, model) {
+    if (offBusy) return; offBusy = true;
+    $('#offOut').hidden = true; $('#offActions').hidden = true; $('#offOut').innerText = '';
+    try {
+      offState('Preparo l\'audio…');
+      let dec; try { dec = await decode16k(file); } catch (e) { offState('Non riesco a leggere questo file audio: prova un formato diverso (m4a, mp3, wav, webm). ' + (e.message || '')); offBusy = false; return; }
+      if (dec.durationSec > 3600) offState('Registrazione lunga (' + fmt(dec.durationSec) + '): la trascrizione può richiedere parecchio, tieni la scheda aperta…');
+      const pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) offState('Scarico il modello ' + (p.file ? p.file.split('/').pop() : '') + ' ' + Math.round(p.progress) + '% (solo la prima volta)'); });
+      offState('Trascrivo sul dispositivo… il tempo cresce con la durata. Puoi lasciare la scheda aperta.');
+      const t0 = Date.now();
+      const out = await pipe(dec.audio, { language: 'italian', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
+      const chunks = (out && out.chunks && out.chunks.length) ? out.chunks : [{ timestamp: [0, 0], text: (out && out.text) || '' }];
+      st.segments = chunks.map(c => ({ t: Math.max(0, Math.round((c.timestamp && c.timestamp[0]) || 0)), text: String(c.text || '').trim() })).filter(s => s.text);
+      st.mode = 'file'; st.parts = [];
+      if (!st.segments.length) { offState('Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.'); offBusy = false; return; }
+      $('#offOut').hidden = false; $('#offOut').innerText = st.segments.map(s => s.text).join('\n');
+      $('#offActions').hidden = false;
+      offState('Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + st.segments.length + ' segmenti. Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).');
+    } catch (e) { offState('Trascrizione non riuscita: ' + (e && (e.message || e)) + '. Se è la prima volta, controlla la rete per lo scaricamento del modello.'); }
+    offBusy = false;
+  }
+  const offText = () => st.mode === 'file' ? st.segments.map(s => s.text).join('\n') : '';
+  $('#offFile').onchange = e => { const f = e.target.files[0]; if (f) transcribeFile(f, $('#offModel').value); e.target.value = ''; };
+  $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
+  $('#offTxt').onclick = () => { const t = offText(); if (t) download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); };
+
   checkEnv();
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
   applyOnly();
