@@ -407,12 +407,15 @@
       $('#startText').innerHTML = 'Aa Trascrivi';
       document.title = 'Trascrizione'; $('#sub').textContent = pref + 'Solo testo (nessun audio)';
       $('#live').innerHTML = '<span class="hint">Premi Trascrivi: qui compare il testo mentre parli, senza registrare l\'audio.</span>';
-    } else {
-      $('#splitLinks').innerHTML = 'Su Android non puoi avere audio e testo nella stessa pagina. Puoi tenerli in <strong>due schede</strong>: '
-        + '<a href="' + esc(withOnly('audio')) + '" target="_blank" rel="noopener">📼 solo audio ↗</a> &nbsp;·&nbsp; '
-        + '<a href="' + esc(withOnly('text')) + '" target="_blank" rel="noopener">🅰 solo testo ↗</a><br>Avvia la registrazione in tutte e due; se il tablet lo consente, avrai audio e testo insieme.';
-      $('#splitCard').hidden = false;
     }
+    // link alle due pagine mono-modalità, sempre visibili: da una scheda apri l'altra
+    const intro = only ? 'Apri l\'altra modalità in una seconda scheda: '
+      : 'Su Android non puoi avere audio e testo nella stessa pagina. Tienili in <strong>due schede</strong>: ';
+    $('#splitLinks').innerHTML = intro
+      + '<a href="' + esc(withOnly('audio')) + '" target="_blank" rel="noopener">📼 solo audio ↗</a> &nbsp;·&nbsp; '
+      + '<a href="' + esc(withOnly('text')) + '" target="_blank" rel="noopener">🅰 solo testo ↗</a>'
+      + (only ? '' : '<br>Avvia la registrazione in tutte e due; se il tablet lo consente, avrai audio e testo insieme.');
+    $('#splitCard').hidden = false;
   }
   checkEnv();
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
