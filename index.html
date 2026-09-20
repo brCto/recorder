@@ -331,7 +331,7 @@
   // parte subito verso il Quaderno, il testo lo raggiunge appena pronto.
   const LIVE_SR = 16000, LIVE_WIN = 15, LIVE_MAXWIN = 28, LIVE_TAIL = 4;
   // si parte col modello scelto ("base"); se sul dispositivo resta indietro rispetto al parlato, livePump passa a "tiny"
-  const liveModel = () => $('#offModel').value;
+  const liveModel = () => (avoid.big ? LIVE_FAST : $('#offModel').value);
   const LIVE_FAST = 'Xenova/whisper-tiny';
   // cattura nel thread audio (AudioWorklet): anche se il thread principale è occupato non si perde nessun campione
   const WORKLET_SRC = "class C extends AudioWorkletProcessor{constructor(){super();this.b=[];this.n=0}process(i){const c=i[0]&&i[0][0];if(c&&c.length){this.b.push(new Float32Array(c));this.n+=c.length;if(this.n>=2048){const a=new Float32Array(this.n);let o=0;for(const x of this.b){a.set(x,o);o+=x.length}this.b=[];this.n=0;this.port.postMessage(a,[a.buffer])}}return true}}registerProcessor('quaderno-cap',C);";
@@ -634,13 +634,28 @@
   async function workerPipe(model, device, onProg) {
     if (!asrWorker) asrWorker = newAsrWorker();
     const w = asrWorker;
+    markLoading(model, device);
     await w.call({ type: 'load', model, device }, null, onProg);
+    markLoaded();
     return Object.assign((audio, opts) => { const a = new Float32Array(audio); return w.call({ type: 'run', model, audio: a, opts }, [a.buffer]); }, { qModel: model });
   }
   // WebGPU "vero": navigator.gpu esiste anche dove non c'è nessun adattatore (Brave, Chromium incorporati,
   // molti Android), e lì la pipeline WebGPU fallisce. Si chiede un adattatore prima di scegliere.
+  // Su Android, però, WebGPU con questi modelli fa cadere la scheda ("pagina bloccata") alla fine dello
+  // scaricamento: lì si usa sempre WASM. E se la pagina muore mentre carica un modello, al riavvio lo si evita.
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const AVOID = 'quaderno-asr-avoid', TRYING = 'quaderno-asr-loading';
+  const avoid = (() => {
+    try {
+      const a = JSON.parse(localStorage.getItem(AVOID)) || {}, t = JSON.parse(localStorage.getItem(TRYING));
+      if (t) { localStorage.removeItem(TRYING); if (t.device === 'webgpu') a.webgpu = true; else if (t.model !== LIVE_FAST) a.big = true; localStorage.setItem(AVOID, JSON.stringify(a)); a.crashed = t; }
+      return a;
+    } catch (e) { return {}; }
+  })();
+  const markLoading = (model, device) => { try { localStorage.setItem(TRYING, JSON.stringify({ model, device, at: Date.now() })); } catch (e) {} };
+  const markLoaded = () => { try { localStorage.removeItem(TRYING); } catch (e) {} };
   let hasGpu = false;
-  const probeGpu = async () => { try { hasGpu = !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch (e) { hasGpu = false; } return hasGpu; };
+  const probeGpu = async () => { if (isAndroid || avoid.webgpu) { hasGpu = false; return false; } try { hasGpu = !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch (e) { hasGpu = false; } return hasGpu; };
   const gpuProbe = probeGpu();
   // transformers.js tiene in cache la promessa della prima sessione ONNX: se quella fallisce (WebGPU rotto)
   // ogni tentativo successivo, anche in WASM, rilancia lo stesso errore. Il ripiego usa una copia nuova del modulo.
@@ -664,12 +679,15 @@
       if (!pipe) {
         const opts = { progress_callback: onProg };
         let mod = await loadTF(), p;
+        markLoading(model, hasGpu ? 'webgpu' : 'wasm');
         try { p = await mod.pipeline('automatic-speech-recognition', model, { ...opts, device: hasGpu ? 'webgpu' : 'wasm' }); }
         catch (e) {
           if (!hasGpu) throw e;
           hasGpu = false; tfReload++; mod = await loadTF(); model = fallbackModel || model;
+          markLoading(model, 'wasm');
           p = await mod.pipeline('automatic-speech-recognition', model, { ...opts, device: 'wasm' });
         }
+        markLoaded();
         pipe = Object.assign((audio, o) => p(audio, o), { qModel: model });
       }
       asr = pipe; asrModel = model; return asr;
@@ -777,6 +795,8 @@
 
   if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR }; // solo per le prove locali
   checkEnv();
+  if (avoid.big) $('#offModel').value = LIVE_FAST;
+  if (avoid.crashed) $('#warn').insertAdjacentHTML('beforeend', '<div class="notice">L\'ultima volta la pagina si &egrave; chiusa mentre caricava il modello di trascrizione' + (avoid.crashed.device === 'webgpu' ? ' sulla GPU: d\'ora in poi qui uso il processore (WASM)' : ' &ldquo;' + esc(String(avoid.crashed.model).replace('Xenova/whisper-', '')) + '&rdquo;: d\'ora in poi qui uso il modello veloce (tiny)') + '. L\'audio della registrazione interrotta, se c\'era, &egrave; recuperabile qui sotto.</div>');
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
   applyOnly();
   renderLink();
