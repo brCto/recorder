@@ -337,13 +337,15 @@
   const WORKLET_SRC = "class C extends AudioWorkletProcessor{constructor(){super();this.b=[];this.n=0}process(i){const c=i[0]&&i[0][0];if(c&&c.length){this.b.push(new Float32Array(c));this.n+=c.length;if(this.n>=2048){const a=new Float32Array(this.n);let o=0;for(const x of this.b){a.set(x,o);o+=x.length}this.b=[];this.n=0;this.port.postMessage(a,[a.buffer])}}return true}}registerProcessor('quaderno-cap',C);";
   let workletUrl = null;
   async function startLivePipe(stream, model) {
-    const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null, slow: 0, switching: false };
+    const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null, slow: 0, switching: false, rate: LIVE_SR };
     st.live = L; st.trDone = false;
-    const push = ch => { if (!L.on) return; L.buf.push(ch); L.pending += ch.length; if (L.pending >= LIVE_SR * LIVE_WIN) cutWindow(L, false); };
+    const push = ch => { if (!L.on) return; L.buf.push(ch); L.pending += ch.length; if (L.pending >= L.rate * LIVE_WIN) cutWindow(L, false); };
     // il microfono si ascolta da subito: quel che si dice mentre il modello si scarica finisce in coda e si trascrive dopo
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      L.ac = new AC({ sampleRate: LIVE_SR });
+      try { L.ac = new AC({ sampleRate: LIVE_SR }); } catch (e) { L.ac = new AC(); }
+      // non tutti i dispositivi accettano 16 kHz: si lavora alla frequenza reale e si ricampiona ogni finestra prima del modello
+      L.rate = L.ac.sampleRate || LIVE_SR;
       L.src = L.ac.createMediaStreamSource(stream);
       let node = null;
       if (L.ac.audioWorklet) {
@@ -383,14 +385,15 @@
     if (!L.pending) return;
     const audio = new Float32Array(L.pending); let o = 0; for (const a of L.buf) { audio.set(a, o); o += a.length; }
     let cut = audio.length;
-    if (!all && audio.length > LIVE_SR * (LIVE_WIN - LIVE_TAIL)) {
-      const from = Math.max(0, audio.length - LIVE_SR * LIVE_TAIL), step = LIVE_SR / 10; let best = Infinity;
+    const R = L.rate || LIVE_SR;
+    if (!all && audio.length > R * (LIVE_WIN - LIVE_TAIL)) {
+      const from = Math.max(0, audio.length - R * LIVE_TAIL), step = Math.round(R / 10); let best = Infinity;
       for (let i = from; i + step <= audio.length; i += step) { let e = 0; for (let j = i; j < i + step; j++) e += audio[j] * audio[j]; if (e < best) { best = e; cut = i + step / 2; } }
       cut = Math.floor(cut);
     }
-    if (audio.length > LIVE_SR * LIVE_MAXWIN) cut = Math.min(cut, LIVE_SR * LIVE_MAXWIN);
+    if (audio.length > R * LIVE_MAXWIN) cut = Math.min(cut, R * LIVE_MAXWIN);
     const piece = audio.slice(0, cut), rest = audio.subarray(cut);
-    L.queue.push({ audio: piece, startT: L.consumed / LIVE_SR }); L.consumed += piece.length;
+    L.queue.push({ audio: piece, startT: L.consumed / R, rate: R }); L.consumed += piece.length;
     L.buf = rest.length ? [new Float32Array(rest)] : []; L.pending = rest.length;
   }
   // tetto ai token generati in proporzione alla durata: quando Whisper entra in un ciclo di ripetizioni non deve
@@ -399,11 +402,12 @@
   async function livePump(L) {
     if (L.busy || !L.queue.length) return;
     L.busy = true;
-    const { audio, startT } = L.queue.shift();
-    const secs = audio.length / LIVE_SR, t0 = Date.now();
+    const w = L.queue.shift(); let audio = w.audio;
+    const secs = audio.length / (w.rate || LIVE_SR), t0 = Date.now();
     try {
+      if (w.rate && w.rate !== LIVE_SR) audio = await resample(audio, w.rate, LIVE_SR);
       const out = await L.pipe(audio, asrOpts(secs));
-      const segs = segsFromOutput(out, startT);
+      const segs = segsFromOutput(out, w.startT);
       if (segs.length) { st.segments = st.segments.concat(segs); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
     } catch (e) { /* pezzo saltato: l'audio resta comunque nella registrazione */ }
     L.busy = false;
@@ -432,6 +436,13 @@
     const before = t.length;
     t = (t + ' ').replace(/((?:\S+ ){1,8}?)\1{2,}/g, '$1$1').trim();
     return t.length * 2 < before ? '' : t;
+  }
+  // ricampionamento con il motore audio del browser (filtro anti-alias incluso)
+  async function resample(audio, from, to) {
+    const len = Math.max(1, Math.ceil(audio.length * to / from));
+    const off = new OfflineAudioContext(1, len, to), b = off.createBuffer(1, audio.length, from);
+    b.copyToChannel(audio, 0); const s = off.createBufferSource(); s.buffer = b; s.connect(off.destination); s.start();
+    return (await off.startRendering()).getChannelData(0);
   }
   const segsFromOutput = (out, offset) => {
     const chunks = (out && out.chunks && out.chunks.length) ? out.chunks : [{ timestamp: [0, 0], text: (out && out.text) || '' }];
