@@ -65,6 +65,7 @@
   <div class="row">
     <button class="big rec" id="start">&#9679; Registra (audio + testo)</button>
     <button class="big" id="startLive" title="Registra l'audio e lo trascrive sul dispositivo mentre parli: un solo microfono, funziona anche su Android. Serve potenza: su tablet il testo può restare un po' indietro.">&#129504; Registra + trascrivi in diretta (sul dispositivo)</button>
+    <button class="big" id="startCloud" title="Registra l'audio e manda ogni pezzo di 15 secondi a Whisper large in cloud (Groq o OpenAI): testo di qualità ben superiore, serve la rete e una chiave API">&#9729; Registra + trascrivi in cloud (Whisper large)</button>
     <button class="big" id="startText" title="Avvia solo il riconoscimento vocale del browser, senza registrare l'audio">Aa Solo trascrizione</button>
     <button class="big stop" id="stop" hidden>&#9632; Ferma</button>
   </div>
@@ -75,6 +76,16 @@
   <p class="hint" style="margin:0" id="splitLinks"></p>
 </div>
 
+<div class="card" id="cloudCard">
+  <p class="hint" style="margin:0 0 10px"><strong>Trascrizione in cloud (Whisper large)</strong><br>
+  Con una chiave API il registratore manda l'audio, a pezzi di 15 secondi, a Whisper large su <strong>Groq</strong> (gratuito entro un tetto giornaliero, chiave che inizia con <code>gsk_</code>, da console.groq.com) o su <strong>OpenAI</strong> (a pagamento, chiave <code>sk-</code>). Il testo &egrave; molto migliore di quello del modello sul dispositivo. L'audio passa dal servizio scelto; la chiave resta solo nel browser di questo dispositivo.</p>
+  <div class="row">
+    <input id="cloudKey" type="password" autocomplete="off" spellcheck="false" placeholder="Chiave API (gsk_… oppure sk-…)" style="flex:1 1 260px;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
+    <button id="cloudTest">Prova la chiave</button>
+  </div>
+  <p class="hint" id="cloudState" style="margin:10px 0 0"></p>
+</div>
+
 <div class="card" id="offlineCard">
   <p class="hint" style="margin:0 0 10px"><strong>Trascrivi una registrazione (sul dispositivo)</strong><br>
   Scegli un file audio &mdash; per esempio la registrazione fatta col registratore del telefono, <strong>senza limiti di durata</strong>. La trascrizione avviene qui sul tablet, offline: la prima volta scarica il modello (qualche decina di MB), poi funziona anche senza rete. <strong>Prova prima con una registrazione corta</strong> per vedere velocit&agrave; e qualit&agrave;.</p>
@@ -83,6 +94,7 @@
       <select id="offModel" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
         <option value="Xenova/whisper-tiny">Veloce (tiny)</option>
         <option value="Xenova/whisper-base" selected>Preciso (base)</option>
+        <option value="cloud">Cloud (Whisper large, serve la chiave)</option>
       </select>
     </label>
   </div>
@@ -372,7 +384,7 @@
       cutWindow(L, true);
       if (!L.queue.length) { st.live = null; st.liveStatus = ''; flushTranscribed(true); renderLive(); renderOut(); return; }
     }
-    st.liveStatus = L.on ? 'Trascrivo sul dispositivo mentre parli: il testo arriva con qualche decina di secondi di ritardo.' : 'Finisco la trascrizione: ' + L.queue.length + (L.queue.length === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…'; renderLive();
+    st.liveStatus = L.on ? (model === CLOUD ? 'Trascrivo in cloud (Whisper large) mentre parli: il testo arriva entro qualche decina di secondi.' : 'Trascrivo sul dispositivo mentre parli: il testo arriva con qualche decina di secondi di ritardo.') : 'Finisco la trascrizione: ' + L.queue.length + (L.queue.length === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…'; renderLive();
     L.timer = setInterval(() => livePump(L), 700);
   }
   function closeLiveAudio(L) {
@@ -409,10 +421,15 @@
       const out = await L.pipe(audio, asrOpts(secs));
       const segs = segsFromOutput(out, w.startT);
       if (segs.length) { st.segments = st.segments.concat(segs); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
-    } catch (e) { /* pezzo saltato: l'audio resta comunque nella registrazione */ }
+    } catch (e) { // pezzo saltato: l'audio resta comunque nella registrazione
+      if (L.pipe && L.pipe.qModel === CLOUD) {
+        L.cloudFail = (L.cloudFail || 0) + 1; st.liveStatus = 'Cloud non raggiungibile (' + (e.message || e) + '): riprovo col prossimo pezzo…'; renderLive();
+        if (L.cloudFail >= 3 && !L.switching) { L.switching = true; toast('Trascrizione in cloud non disponibile: passo al modello sul dispositivo'); loadASR(liveModel(), null, LIVE_FAST).then(p => { if (st.live === L) { L.pipe = p; st.liveStatus = 'Trascrivo sul dispositivo mentre parli.'; renderLive(); } }).catch(() => {}).finally(() => { L.switching = false; }); }
+      }
+    }
     L.busy = false;
     // il modello impiega più della durata della finestra per due volte di fila: non regge il tempo reale, si passa a quello veloce
-    if (st.active && L.on && L.pipe && L.pipe.qModel !== LIVE_FAST && !L.switching) {
+    if (st.active && L.on && L.pipe && L.pipe.qModel !== LIVE_FAST && L.pipe.qModel !== CLOUD && !L.switching) {
       L.slow = (Date.now() - t0) > secs * 850 ? L.slow + 1 : 0;
       if (L.slow >= 2) {
         L.switching = true; st.liveStatus = 'Il modello scelto resta indietro sul parlato: passo a quello veloce (tiny)…'; renderLive();
@@ -463,7 +480,7 @@
   }
 
   function beginUi() {
-    $('#start').hidden = true; $('#startLive').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
+    $('#start').hidden = true; $('#startLive').hidden = true; $('#startCloud').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
     $('#timer').classList.add('live');
     st.timer = setInterval(tick, 500);
     // checkpoint periodico: aggiorna il salvataggio recuperabile ogni 30s anche in silenzio
@@ -487,7 +504,7 @@
     saveMeta();
     st.trDone = true; st.savedId = null;
     await gpuProbe; // per scegliere il modello in diretta serve sapere se la GPU c'è davvero
-    if (trans === 'offline') startLivePipe(stream, liveModel()); else { startSR(); clearTimeout(st.srNoText); st.srNoText = setTimeout(srFallback, 15000); }
+    if (trans === 'cloud') startLivePipe(stream, CLOUD); else if (trans === 'offline') startLivePipe(stream, liveModel()); else { startSR(); clearTimeout(st.srNoText); st.srNoText = setTimeout(srFallback, 15000); }
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
     beginUi();
     send('start', {});
@@ -522,7 +539,7 @@
     st.wake = null;
     st.dur = Math.round((Date.now() - st.t0) / 1000);
     $('#timer').classList.remove('live');
-    $('#start').hidden = false; $('#startLive').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
+    $('#start').hidden = false; $('#startLive').hidden = false; $('#startCloud').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
     saveMeta();
     renderLive();
     const sent = deliver();
@@ -548,6 +565,7 @@
 
   $('#start').onclick = () => start('browser');
   $('#startLive').onclick = () => start('offline');
+  $('#startCloud').onclick = () => { if (!cloudKey()) { toast('Inserisci prima la chiave API nella sezione "Trascrizione in cloud"'); $('#cloudCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#cloudKey').focus(); return; } start('cloud'); };
   $('#startText').onclick = startText;
   $('#stop').onclick = stop;
   $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
@@ -604,7 +622,7 @@
       document.title = 'Registratore audio'; $('#sub').textContent = pref + 'Solo audio (nessuna trascrizione)';
       $('#live').innerHTML = '<span class="hint">Premi Registra: registra solo l\'audio. Per il testo dal vivo apri l\'altra scheda (solo testo).</span>';
     } else if (only === 'text') {
-      $('#start').style.display = 'none'; $('#startLive').style.display = 'none';
+      $('#start').style.display = 'none'; $('#startLive').style.display = 'none'; $('#startCloud').style.display = 'none';
       $('#startText').innerHTML = 'Aa Trascrivi';
       document.title = 'Trascrizione'; $('#sub').textContent = pref + 'Solo testo (nessun audio)';
       $('#live').innerHTML = '<span class="hint">Premi Trascrivi: qui compare il testo mentre parli, senza registrare l\'audio.</span>';
@@ -671,7 +689,52 @@
   // transformers.js tiene in cache la promessa della prima sessione ONNX: se quella fallisce (WebGPU rotto)
   // ogni tentativo successivo, anche in WASM, rilancia lo stesso errore. Il ripiego usa una copia nuova del modulo.
   const loadTF = () => import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3' + (tfReload ? '?r=' + tfReload : ''));
+  // ----- trascrizione in cloud: Whisper large via API compatibile OpenAI (Groq o OpenAI), chiave salvata solo qui -----
+  const CLOUD = 'cloud', CLOUD_KEY = 'quaderno-cloud-key';
+  const cloudKey = () => { try { return (localStorage.getItem(CLOUD_KEY) || '').trim(); } catch (e) { return ''; } };
+  const cloudCfg = key => key.startsWith('gsk_') ? { url: 'https://api.groq.com/openai/v1/audio/transcriptions', model: 'whisper-large-v3', name: 'Groq' } : { url: 'https://api.openai.com/v1/audio/transcriptions', model: 'whisper-1', name: 'OpenAI' };
+  function wavBlob(f32, sr) {
+    const n = f32.length, d = new DataView(new ArrayBuffer(44 + n * 2)); const w = (o, str) => { for (let i = 0; i < str.length; i++) d.setUint8(o + i, str.charCodeAt(i)); };
+    w(0, 'RIFF'); d.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, sr, true); d.setUint32(28, sr * 2, true); d.setUint16(32, 2, true); d.setUint16(34, 16, true); w(36, 'data'); d.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) d.setInt16(44 + i * 2, Math.max(-1, Math.min(1, f32[i])) * 32767, true);
+    return new Blob([d], { type: 'audio/wav' });
+  }
+  // audio Float32 a 16 kHz → { text, chunks } come transformers.js; i file lunghi vanno a pezzi di 10 minuti (limite di 25 MB a richiesta)
+  async function cloudTranscribe(audio, sr, opts) {
+    const key = cloudKey(); if (!key) throw new Error('chiave API mancante');
+    const cfg = cloudCfg(key); const CH = 600 * sr; const chunks = []; let text = '';
+    for (let off = 0; off < audio.length; off += CH) {
+      const piece = audio.subarray(off, Math.min(audio.length, off + CH));
+      const fd = new FormData(); fd.append('file', wavBlob(piece, sr), 'audio.wav'); fd.append('model', cfg.model); fd.append('language', 'it'); fd.append('response_format', 'verbose_json'); fd.append('temperature', '0');
+      if (opts && opts.prompt) fd.append('prompt', opts.prompt);
+      let res, tries = 0; const maxTries = opts && opts.retries != null ? opts.retries : 3; // in diretta un solo nuovo tentativo: se il cloud non risponde si passa presto al modello locale
+      for (;;) {
+        try { res = await fetch(cfg.url, { method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd }); }
+        catch (e) { if (tries++ < maxTries) { await new Promise(r => setTimeout(r, 3000 * tries)); continue; } throw new Error(cfg.name + ' non raggiungibile'); }
+        if (res.ok) break;
+        if (res.status === 401 || res.status === 403) throw new Error('chiave API non valida per ' + cfg.name);
+        if ((res.status === 429 || res.status >= 500) && tries++ < maxTries) { await new Promise(r => setTimeout(r, 3000 * tries)); continue; }
+        throw new Error(cfg.name + ' HTTP ' + res.status);
+      }
+      const j = await res.json(); const base = off / sr;
+      for (const s of (j.segments || [])) chunks.push({ timestamp: [base + (+s.start || 0), base + (+s.end || 0)], text: s.text || '' });
+      if (!(j.segments || []).length && j.text) chunks.push({ timestamp: [base, base], text: j.text });
+      text += (j.text || '') + ' ';
+      if (opts && opts.onProgress) opts.onProgress(Math.min(1, (off + piece.length) / audio.length));
+    }
+    return { text: text.trim(), chunks };
+  }
+  // stessa chiamata pipe(audio, opts) dei modelli locali; il testo del pezzo precedente fa da contesto (continuità e ortografia)
+  function cloudPipe() { let last = ''; const p = async (audio, opts) => { const out = await cloudTranscribe(audio, LIVE_SR, { prompt: last.slice(-200), retries: 1 }); if (out.text) last = out.text; return out; }; p.qModel = CLOUD; return p; }
+  async function cloudCheck() {
+    const key = cloudKey(); const el = $('#cloudState');
+    if (!key) { el.textContent = 'Nessuna chiave: la trascrizione in cloud non è attiva.'; return; }
+    el.textContent = 'Provo la chiave con ' + cloudCfg(key).name + '…';
+    try { const a = new Float32Array(16000); for (let i = 0; i < a.length; i++) a[i] = Math.sin(i / 16000 * 2 * Math.PI * 440) * 0.2; await cloudTranscribe(a, 16000); el.textContent = 'Chiave valida (' + cloudCfg(key).name + ', ' + cloudCfg(key).model + '): "Registra + trascrivi in cloud" è pronto.'; }
+    catch (e) { el.textContent = 'Prova non riuscita: ' + (e.message || e); }
+  }
   async function loadASR(model, onProg, fallbackModel) {
+    if (model === CLOUD) { if (!cloudKey()) throw new Error('inserisci la chiave API nella sezione "Trascrizione in cloud"'); asr = cloudPipe(); asrModel = CLOUD; return asr; }
     if (asr && asrModel === model) return asr;
     if (location.hostname === 'localhost' && window.__fakeASR) { asr = window.__fakeASR; asrModel = model; return asr; } // solo per le prove locali
     if (asrLoading) return asrLoading.catch(() => {}).then(() => loadASR(model, onProg, fallbackModel)); // un caricamento alla volta
@@ -807,6 +870,10 @@
   if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR }; // solo per le prove locali
   checkEnv();
   if (avoid.big) $('#offModel').value = LIVE_FAST;
+  $('#cloudKey').value = cloudKey();
+  $('#cloudKey').addEventListener('input', e => { const v = e.target.value.trim(); try { if (v) localStorage.setItem(CLOUD_KEY, v); else localStorage.removeItem(CLOUD_KEY); } catch (x) {} if (asrModel === CLOUD) { asr = null; asrModel = null; } $('#cloudState').textContent = v ? 'Chiave salvata su questo dispositivo (' + cloudCfg(v).name + '). Premi "Prova la chiave" per verificarla.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.'; });
+  $('#cloudTest').onclick = cloudCheck;
+  $('#cloudState').textContent = cloudKey() ? 'Chiave salvata (' + cloudCfg(cloudKey()).name + '): "Registra + trascrivi in cloud" è pronto.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.';
   if (avoid.crashed) $('#warn').insertAdjacentHTML('beforeend', '<div class="notice">L\'ultima volta la pagina si &egrave; chiusa mentre caricava il modello di trascrizione' + (avoid.crashed.device === 'webgpu' ? ' sulla GPU: d\'ora in poi qui uso il processore (WASM)' : ' &ldquo;' + esc(String(avoid.crashed.model).replace('Xenova/whisper-', '')) + '&rdquo;: d\'ora in poi qui uso il modello veloce (tiny)') + '. L\'audio della registrazione interrotta, se c\'era, &egrave; recuperabile qui sotto.</div>');
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
   applyOnly();
