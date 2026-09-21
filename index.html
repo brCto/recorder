@@ -236,6 +236,10 @@
     if (d.type === 'saved') { st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed(); }
     // il Quaderno chiede di trascrivere una registrazione caricata lì: passa i file audio, oppure gli indirizzi da cui scaricarli
     if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } startJob(d); }
+    // comandi dal Quaderno: si avvia e si ferma senza tornare su questa scheda (il permesso del microfono deve
+    // essere già stato dato qui una volta). Da remoto si usa il flusso audio, che lavora anche in secondo piano.
+    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (!st.active) start(cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
+    if (d.type === 'stop-remote') { if (st.active) stop(); }
   });
   // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
   function flushTranscribed(done) {
@@ -250,7 +254,8 @@
   }
   send('hello', { active: false });
   // il ping tiene vivo il collegamento e lo ricostruisce se il Quaderno è stato ricaricato
-  setInterval(() => { if (!send('ping', { active: st.active, segments: st.segments.length })) { if (st.linked && !peer()) { st.linked = false; renderLink(); } } }, 10000);
+  setInterval(() => { if (!send('ping', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() })) { if (st.linked && !peer()) { st.linked = false; renderLink(); } } }, 10000);
+  setTimeout(() => send('ping', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() }), 1500); // primo ping presto: il Quaderno mostra subito "Registra da qui"
 
   // ----- interfaccia -----
   function renderLive() {
@@ -518,7 +523,7 @@
     trans = trans || 'browser';
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-    catch (e) { toast(micError(e)); return; }
+    catch (e) { toast(micError(e)); return false; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
     Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '' });
     st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
@@ -532,6 +537,7 @@
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
     beginUi();
     send('start', {});
+    return true;
   }
   // solo trascrizione: nessun getUserMedia/MediaRecorder, così su Android il riconoscimento vocale
   // non deve contendersi il microfono con la registrazione (è l'unico modo perché parta)
