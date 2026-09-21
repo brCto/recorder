@@ -204,9 +204,20 @@
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/[a-z0-9-]+\.frame\.claudeusercontent\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
-  const peer = () => (window.opener && !window.opener.closed) ? window.opener : (window.parent !== window ? window.parent : null);
+  // se questa scheda è stata aperta da un'altra scheda del registratore (le due schede "solo audio"/"solo testo"),
+  // il Quaderno è chi ha aperto quella: si risale di un livello (stessa origine, quindi leggibile)
+  const peer = () => {
+    let w = (window.opener && !window.opener.closed) ? window.opener : (window.parent !== window ? window.parent : null);
+    try { if (w && w.location.origin === location.origin && w.opener && !w.opener.closed) w = w.opener; } catch (e) {}
+    return w;
+  };
+  // la scheda "solo testo" non deve contendersi la diretta con quella "solo audio": al Quaderno si presenta
+  // come inattiva e consegna tutto solo alla fine (stop)
+  const quiet = only === 'text';
   function send(type, data) {
     const p = peer(); if (!p) return false;
+    if (quiet && (type === 'start' || type === 'segments')) return true;
+    if (quiet && (type === 'hello' || type === 'ping')) data = Object.assign({}, data, { active: false, segments: 0 });
     // finché il Quaderno non ha risposto, verso l'apritore vanno solo i messaggi senza contenuto (hello, ping)
     if (!st.quadernoOrigin && type !== 'hello' && type !== 'ping') return false;
     try { p.postMessage(Object.assign({ source: 'quaderno-recorder', type, lessonId, t0: st.t0 }, data || {}), st.quadernoOrigin || '*'); return true; }
