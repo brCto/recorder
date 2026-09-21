@@ -341,12 +341,21 @@
   // dopo 15 s senza una parola si passa al modello sul dispositivo, che lavora sullo stesso flusso audio
   function srFallback() {
     if (!st.active || st.mode !== 'full' || st.trans !== 'browser' || st.segments.length || st.interim) return;
-    st.srBlocked = true; clearTimeout(st.srRestartT);
-    if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
-    st.srRunning = false; st.gapFrom = 0; st.trans = 'offline';
-    toast('Il riconoscimento del browser non risponde mentre registro: trascrivo sul dispositivo.');
-    startLivePipe(st.stream, liveModel());
+    switchToPipe('Il riconoscimento del browser non risponde mentre registro');
   }
+  // dal riconoscimento del browser al flusso audio (cloud se c'è la chiave, altrimenti modello sul dispositivo)
+  function switchToPipe(why) {
+    if (!st.active || st.mode !== 'full' || st.trans !== 'browser') return;
+    st.srBlocked = true; clearTimeout(st.srRestartT); clearTimeout(st.srNoText);
+    if (st.sr) { const s = st.sr; st.sr = null; try { s.onend = null; s.stop(); } catch (e) {} }
+    st.srRunning = false; st.gapFrom = 0; st.interim = '';
+    const cloud = !!cloudKey(); st.trans = cloud ? 'cloud' : 'offline';
+    toast(why + ': continuo ' + (cloud ? 'con Whisper in cloud.' : 'col modello sul dispositivo.'));
+    startLivePipe(st.stream, cloud ? CLOUD : liveModel());
+  }
+  // in secondo piano (Quaderno in primo piano, schermo spento) il riconoscimento del browser si ferma su Android:
+  // si passa subito al flusso audio, che invece continua anche con la scheda nascosta
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && st.active && st.mode === 'full' && st.trans === 'browser') switchToPipe('Scheda in secondo piano'); });
 
   // ----- trascrizione in diretta sul dispositivo: stesso microfono della registrazione (un solo accesso) -----
   // L'audio si accumula e va al modello a finestre di ~15 s, tagliate nel punto più silenzioso degli ultimi
@@ -360,9 +369,11 @@
   const WORKLET_SRC = "class C extends AudioWorkletProcessor{constructor(){super();this.b=[];this.n=0}process(i){const c=i[0]&&i[0][0];if(c&&c.length){this.b.push(new Float32Array(c));this.n+=c.length;if(this.n>=2048){const a=new Float32Array(this.n);let o=0;for(const x of this.b){a.set(x,o);o+=x.length}this.b=[];this.n=0;this.port.postMessage(a,[a.buffer])}}return true}}registerProcessor('quaderno-cap',C);";
   let workletUrl = null;
   async function startLivePipe(stream, model) {
-    const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null, slow: 0, switching: false, rate: LIVE_SR };
+    // t0off: il flusso può partire a registrazione già iniziata (passaggio dal riconoscimento del browser): i tempi dei segmenti restano riferiti all'inizio
+    const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null, slow: 0, switching: false, rate: LIVE_SR, t0off: st.t0 ? (Date.now() - st.t0) / 1000 : 0 };
     st.live = L; st.trDone = false;
-    const push = ch => { if (!L.on) return; L.buf.push(ch); L.pending += ch.length; if (L.pending >= L.rate * LIVE_WIN) cutWindow(L, false); };
+    // la coda si smaltisce spinta dall'audio stesso (i messaggi del worklet arrivano anche in secondo piano), non solo dal timer, che in secondo piano il browser rallenta fino a una volta al minuto
+    const push = ch => { if (!L.on) return; L.buf.push(ch); L.pending += ch.length; if (L.pending >= L.rate * LIVE_WIN) { cutWindow(L, false); if (L.pipe) livePump(L); } };
     // il microfono si ascolta da subito: quel che si dice mentre il modello si scarica finisce in coda e si trascrive dopo
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -430,7 +441,7 @@
     try {
       if (w.rate && w.rate !== LIVE_SR) audio = await resample(audio, w.rate, LIVE_SR);
       const out = await L.pipe(audio, asrOpts(secs));
-      const segs = segsFromOutput(out, w.startT);
+      const segs = segsFromOutput(out, w.startT + (L.t0off || 0));
       if (segs.length) { st.segments = st.segments.concat(segs); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
     } catch (e) { // pezzo saltato: l'audio resta comunque nella registrazione
       if (L.pipe && L.pipe.qModel === CLOUD) {
@@ -439,6 +450,7 @@
       }
     }
     L.busy = false;
+    if (L.queue.length) Promise.resolve().then(() => livePump(L)); // pezzo dopo pezzo senza aspettare il timer
     // il modello impiega più della durata della finestra per due volte di fila: non regge il tempo reale, si passa a quello veloce
     if (st.active && L.on && L.pipe && L.pipe.qModel !== LIVE_FAST && L.pipe.qModel !== CLOUD && !L.switching) {
       L.slow = (Date.now() - t0) > secs * 850 ? L.slow + 1 : 0;
@@ -488,6 +500,7 @@
     if (!L.queue.length && !L.busy) { clearInterval(L.timer); st.live = null; st.liveStatus = ''; st.trDone = true; return; }
     const n = L.queue.length + (L.busy ? 1 : 0);
     st.liveStatus = 'Finisco la trascrizione: ' + n + (n === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…';
+    if (!L.busy) livePump(L); // senza aspettare il timer (in secondo piano può essere rallentato)
   }
 
   function beginUi() {
