@@ -443,6 +443,9 @@
     L.busy = true;
     const w = L.queue.shift(); let audio = w.audio;
     const secs = audio.length / (w.rate || LIVE_SR), t0 = Date.now();
+    // un pezzo di silenzio non va al modello: non c'è niente da trascrivere e Whisper ci inventerebbe sopra
+    let e = 0; for (let i = 0; i < audio.length; i += 4) e += audio[i] * audio[i]; const rms = Math.sqrt(e / Math.ceil(audio.length / 4));
+    if (rms < 0.004) { L.busy = false; if (L.queue.length) Promise.resolve().then(() => livePump(L)); if (!st.active && !L.queue.length) { clearInterval(L.timer); if (st.live === L) st.live = null; st.liveStatus = ''; flushTranscribed(true); toast('Trascrizione completata'); renderLive(); renderOut(); } return; }
     try {
       if (w.rate && w.rate !== LIVE_SR) audio = await resample(audio, w.rate, LIVE_SR);
       const out = await L.pipe(audio, asrOpts(secs));
@@ -474,10 +477,12 @@
   }
   // su silenzio e rumore Whisper "inventa": etichette tra parentesi ([Musica], (Police)), crediti di sottotitoli,
   // una parola o una frase ripetuta all'infinito. Si tolgono, e un pezzo fatto per lo più di ripetizioni si scarta.
-  const JUNK = /sottotitoli|amara\.org|qtss|grazie per (aver guardato|l'attenzione)/i;
+  const JUNK = /sottotitoli|amara\.org|qtss|grazie per (aver guardato|l'attenzione)|iscrivetevi|iscriviti al canale/i;
+  // frasi di chiusura che Whisper inventa sul silenzio: si scartano solo se sono tutto il pezzo (dentro una frase vera restano)
+  const SILENCE_PHRASES = /^(grazie( mille| a tutti| a tutti e a presto| dell'attenzione| per l'attenzione| e arrivederci| e a presto)?|arrivederci( a tutti)?|ciao( a tutti)?|a presto|alla prossima|buonanotte|buona giornata|buona serata|fine|ok|bene|la|e|sì|no)[\s.!…]*$/i;
   function cleanText(t) {
     t = String(t || '').replace(/[\[(][^\])]{0,40}[\])]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!t || JUNK.test(t)) return '';
+    if (!t || JUNK.test(t) || SILENCE_PHRASES.test(t)) return '';
     const before = t.length;
     t = (t + ' ').replace(/((?:\S+ ){1,8}?)\1{2,}/g, '$1$1').trim();
     return t.length * 2 < before ? '' : t;
@@ -747,7 +752,9 @@
         throw new Error(cfg.name + ' HTTP ' + res.status);
       }
       const j = await res.json(); const base = off / sr;
-      for (const s of (j.segments || [])) chunks.push({ timestamp: [base + (+s.start || 0), base + (+s.end || 0)], text: s.text || '' });
+      // il servizio dice, per ogni frase, quanto è probabile che fosse silenzio e quanto era sicuro del testo: le frasi
+      // "sentite" nel silenzio (la regola di Whisper stesso: no_speech > 0,6 e logprob medio < -1) si scartano
+      for (const s of (j.segments || [])) { if (+s.no_speech_prob > 0.6 && +s.avg_logprob < -1.0) continue; chunks.push({ timestamp: [base + (+s.start || 0), base + (+s.end || 0)], text: s.text || '' }); }
       if (!(j.segments || []).length && j.text) chunks.push({ timestamp: [base, base], text: j.text });
       text += (j.text || '') + ' ';
       if (opts && opts.onProgress) opts.onProgress(Math.min(1, (off + piece.length) / audio.length));
