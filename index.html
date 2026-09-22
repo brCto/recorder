@@ -143,7 +143,12 @@
                parts: [], partIndex: 0, partTimer: null, seq: 0, timer: null, wake: null,
                srRunning: false, srBlocked: false, srFails: 0, srRestartT: null, gapFrom: 0, gaps: [], srBaseLen: 0, srFinalT: [],
                linked: false, linkTitle: '', quadernoOrigin: null, sent: false, recovered: false, mode: 'full', trans: 'browser', liveStatus: '', live: null, lastSaved: 0, saveTimer: null,
-               savedId: null, trDone: true, srNoText: null, job: null };
+               savedId: null, trDone: true, srNoText: null, job: null,
+               // vocabolario del corso (termini, teoremi, simboli): arriva dal Quaderno con l'indirizzo e con ack/start-remote/transcribe;
+               // va a Whisper in cloud come prompt e al riconoscimento del browser come frasi da favorire
+               vocab: (qs.get('vocab') || '').slice(0, 600) };
+  const setVocab = v => { if (typeof v === 'string' && v.trim() !== st.vocab) { st.vocab = v.trim().slice(0, 600); renderLink(); } };
+  const vocabList = () => st.vocab.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean).slice(0, 100);
   const only = qs.get('only'); // 'audio' = solo registrazione, 'text' = solo trascrizione, altrimenti entrambe
 
   const two = n => String(n).padStart(2, '0');
@@ -226,7 +231,7 @@
   addEventListener('message', ev => {
     const d = ev.data; if (!d || d.source !== 'quaderno' || !OPENER_OK(ev.origin)) return;
     if (d.type === 'ack') {
-      st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; renderLink();
+      st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; setVocab(d.vocab); renderLink();
       if (d.resend && st.active && st.segments.length) send('segments', { segments: st.segments });
       // registrazione finita senza che lo stop sia arrivato (Quaderno ricaricato): la rimando; quelle recuperate le manda l'utente
       if (d.resend && !st.active && !st.sent && !st.recovered && (st.parts.length || st.segments.length)) deliver();
@@ -235,10 +240,10 @@
     // salvata nel Quaderno: la copia locale non serve più (resta in memoria per "Salva l'audio" finché la scheda è aperta)
     if (d.type === 'saved') { st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed(); }
     // il Quaderno chiede di trascrivere una registrazione caricata lì: passa i file audio, oppure gli indirizzi da cui scaricarli
-    if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } startJob(d); }
+    if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (!st.active) setVocab(d.vocab); startJob(d); }
     // comandi dal Quaderno: si avvia e si ferma senza tornare su questa scheda (il permesso del microfono deve
     // essere già stato dato qui una volta). Da remoto si usa il flusso audio, che lavora anche in secondo piano.
-    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (!st.active) start(cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
+    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (d.title) st.linkTitle = d.title; setVocab(d.vocab); if (!st.active) start(cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
     if (d.type === 'stop-remote') { if (st.active) stop(); }
   });
   // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
@@ -249,7 +254,8 @@
   }
   function renderLink() {
     const el = $('#link'); el.classList.toggle('on', st.linked);
-    $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli'
+    const nv = vocabList().length;
+    $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
       : (peer() ? 'In attesa del Quaderno… (se non si collega, a fine registrazione usa Copia e Salva)' : 'Aperto da solo: a fine registrazione copia la trascrizione e salva l\'audio, poi caricali nel Quaderno');
   }
   send('hello', { active: false });
@@ -311,6 +317,7 @@
     // sotto st.segments a partire da srBaseLen; i segmenti delle sessioni precedenti restano fissi
     st.srBaseLen = st.segments.length; st.srFinalT = [];
     const sr = new SR(); sr.lang = 'it-IT'; sr.continuous = true; sr.interimResults = true;
+    try { if (st.vocab && 'SpeechRecognitionPhrase' in window && 'phrases' in sr) sr.phrases = vocabList().map(p => new SpeechRecognitionPhrase(p, 2)); } catch (e) {}
     sr.onstart = () => { st.srRunning = true; if (st.gapFrom) { if (Date.now() - st.gapFrom > 8000) st.gaps.push({ from: st.gapFrom, to: Date.now() }); st.gapFrom = 0; renderLive(); } };
     sr.onresult = ev => {
       st.srFails = 0; clearTimeout(st.srNoText);
@@ -584,7 +591,7 @@
   // trascrizione e audio insieme al Quaderno; il Blob passa per postMessage senza copie su disco
   function deliver() {
     if (!st.linked || st.sent) return false;
-    return send('stop', { durationSec: st.dur, segments: st.segments, gaps: st.gaps, parts: st.parts.map(p => ({ blob: p.blob, durationSec: p.durationSec })) });
+    return send('stop', { durationSec: st.dur, segments: st.segments, gaps: st.gaps, pending: !!st.live, parts: st.parts.map(p => ({ blob: p.blob, durationSec: p.durationSec })) });
   }
 
   // il Quaderno rilegge il testo una riga per frase: è il formato che si aspetta "Salva come segmenti"
@@ -762,7 +769,8 @@
     return { text: text.trim(), chunks };
   }
   // stessa chiamata pipe(audio, opts) dei modelli locali; il testo del pezzo precedente fa da contesto (continuità e ortografia)
-  function cloudPipe() { let last = ''; const p = async (audio, opts) => { const out = await cloudTranscribe(audio, LIVE_SR, { prompt: last.slice(-200), retries: 1 }); if (out.text) last = out.text; return out; }; p.qModel = CLOUD; return p; }
+  const cloudPrompt = last => ((st.vocab ? st.vocab.slice(0, 400) + '. ' : '') + (last || '').slice(-200)).trim();
+  function cloudPipe() { let last = ''; const p = async (audio, opts) => { const out = await cloudTranscribe(audio, LIVE_SR, { prompt: cloudPrompt(last), retries: 1 }); if (out.text) last = out.text; return out; }; p.qModel = CLOUD; return p; }
   async function cloudCheck() {
     const key = cloudKey(); const el = $('#cloudState');
     if (!key) { el.textContent = 'Nessuna chiave: la trascrizione in cloud non è attiva.'; return; }
