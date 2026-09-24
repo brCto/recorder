@@ -277,7 +277,9 @@
     live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans + liveStatus) || (st.liveStatus ? '<span class="hint">' + esc(st.liveStatus) + '</span>' : '<span class="hint">In ascolto&hellip;</span>');
     live.scrollTop = live.scrollHeight;
     $('#count').textContent = (st.segments.length ? st.segments.length + (st.segments.length === 1 ? ' segmento' : ' segmenti') : (st.active ? 'In ascolto…' : 'Nessun segmento'))
-      + (st.gaps.length ? ' · ' + st.gaps.length + (st.gaps.length === 1 ? ' buco nella trascrizione' : ' buchi nella trascrizione') : '');
+      + (st.gaps.length ? ' · ' + st.gaps.length + (st.gaps.length === 1 ? ' buco nella trascrizione' : ' buchi nella trascrizione') : '')
+      + (st.lostWin ? ' · ' + st.lostWin + (st.lostWin === 1 ? ' pezzo non trascritto' : ' pezzi non trascritti') + ' (l\'audio c\'è)' : '')
+      + (st.live && st.live.queue.length > 8 ? ' · ' + fmt(queuedSecs(st.live)) + ' di audio in attesa' : '');
   }
   function renderOut() {
     const has = st.parts.length || st.segments.length;
@@ -426,6 +428,22 @@
     try { L.src && L.src.disconnect(); L.sp && L.sp.disconnect(); } catch (e) {}
     try { L.ac && L.ac.close(); } catch (e) {}
   }
+  // in coda l'audio sta a 16 bit: metà memoria, perché con il modello indietro (scheda in secondo piano, telefono lento)
+  // la coda può arrivare a decine di minuti e non deve far chiudere la scheda dal sistema
+  const toI16 = f => { const o = new Int16Array(f.length); for (let i = 0; i < f.length; i++) o[i] = Math.max(-1, Math.min(1, f[i])) * 32767; return o; };
+  const toF32 = a => { if (a instanceof Float32Array) return a; const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] / 32767; return o; };
+  const queuedSecs = L => L.queue.reduce((n, w) => n + w.audio.length / (w.rate || LIVE_SR), 0);
+  // si passa al modello veloce solo se la coda supera questi minuti: tiny in italiano sbaglia e inventa molto di più,
+  // e restare indietro non fa perdere nulla (la coda si finisce dopo lo stop)
+  const LIVE_BACKLOG_MAX = 20 * 60;
+  // silenzio vero: nessun tratto di 100 ms sopra questa soglia. Una media sui 15 s scartava anche il parlato di un
+  // docente lontano dal microfono, a voce bassa rispetto al rumore dell'aula
+  const LIVE_SILENCE = 0.003;
+  function loudest(audio, rate) {
+    const step = Math.max(1, Math.round((rate || LIVE_SR) / 10)); let best = 0;
+    for (let i = 0; i < audio.length; i += step) { let e = 0; const end = Math.min(audio.length, i + step); for (let j = i; j < end; j++) e += audio[j] * audio[j]; best = Math.max(best, Math.sqrt(e / (end - i))); }
+    return best;
+  }
   // stacca una finestra dal buffer e la mette in coda; il taglio cade nel punto più silenzioso degli ultimi secondi
   function cutWindow(L, all) {
     if (!L.pending) return;
@@ -438,8 +456,8 @@
       cut = Math.floor(cut);
     }
     if (audio.length > R * LIVE_MAXWIN) cut = Math.min(cut, R * LIVE_MAXWIN);
-    const piece = audio.slice(0, cut), rest = audio.subarray(cut);
-    L.queue.push({ audio: piece, startT: L.consumed / R, rate: R }); L.consumed += piece.length;
+    const piece = audio.subarray(0, cut), rest = audio.subarray(cut);
+    L.queue.push({ audio: toI16(piece), startT: L.consumed / R, rate: R }); L.consumed += piece.length;
     L.buf = rest.length ? [new Float32Array(rest)] : []; L.pending = rest.length;
   }
   // tetto ai token generati in proporzione alla durata: quando Whisper entra in un ciclo di ripetizioni non deve
@@ -448,17 +466,27 @@
   async function livePump(L) {
     if (L.busy || !L.queue.length) return;
     L.busy = true;
-    const w = L.queue.shift(); let audio = w.audio;
-    const secs = audio.length / (w.rate || LIVE_SR), t0 = Date.now();
+    const w = L.queue.shift(); let audio = toF32(w.audio);
+    const secs = audio.length / (w.rate || LIVE_SR);
     // un pezzo di silenzio non va al modello: non c'è niente da trascrivere e Whisper ci inventerebbe sopra
-    let e = 0; for (let i = 0; i < audio.length; i += 4) e += audio[i] * audio[i]; const rms = Math.sqrt(e / Math.ceil(audio.length / 4));
-    if (rms < 0.004) { L.busy = false; if (L.queue.length) Promise.resolve().then(() => livePump(L)); if (!st.active && !L.queue.length) { clearInterval(L.timer); if (st.live === L) st.live = null; st.liveStatus = ''; flushTranscribed(true); toast('Trascrizione completata'); renderLive(); renderOut(); } return; }
+    if (loudest(audio, w.rate) < LIVE_SILENCE) { L.busy = false; if (L.queue.length) Promise.resolve().then(() => livePump(L)); if (!st.active && !L.queue.length) { clearInterval(L.timer); if (st.live === L) st.live = null; st.liveStatus = ''; flushTranscribed(true); toast('Trascrizione completata'); renderLive(); renderOut(); } return; }
     try {
       if (w.rate && w.rate !== LIVE_SR) audio = await resample(audio, w.rate, LIVE_SR);
       const out = await L.pipe(audio, asrOpts(secs));
       const segs = segsFromOutput(out, w.startT + (L.t0off || 0));
-      if (segs.length) { st.segments = st.segments.concat(segs); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
-    } catch (e) { // pezzo saltato: l'audio resta comunque nella registrazione
+      // in ordine di tempo: un pezzo ritentato arriva dopo quelli che lo seguivano
+      if (segs.length) { st.segments = st.segments.concat(segs).sort((a, b) => a.t - b.t); saveMeta(); if (st.active) send('segments', { segments: st.segments }); else flushTranscribed(false); renderLive(); }
+      L.fails = 0;
+    } catch (e) {
+      // pezzo non trascritto: si ritenta una volta in fondo alla coda, poi si conta come perso (l'audio resta nella registrazione)
+      if (!w.tries) L.queue.push({ ...w, tries: 1 }); else { st.lostWin = (st.lostWin || 0) + 1; renderLive(); }
+      // il modello locale fallisce di continuo (worker morto, memoria): si ricarica da capo invece di perdere un pezzo dopo l'altro
+      L.fails = (L.fails || 0) + 1;
+      if (L.fails >= 3 && L.pipe && L.pipe.qModel !== CLOUD && !L.switching) {
+        L.switching = true; L.fails = 0; st.liveStatus = 'Il modello di trascrizione si è bloccato: lo ricarico…'; renderLive();
+        try { asrWorker && asrWorker.kill(); } catch (x) {} asrWorker = null; asr = null;
+        loadASR(liveModel(), null, LIVE_FAST).then(p => { if (st.live === L) { L.pipe = p; st.liveStatus = 'Trascrivo sul dispositivo mentre parli.'; renderLive(); } }).catch(() => {}).finally(() => { L.switching = false; });
+      }
       if (L.pipe && L.pipe.qModel === CLOUD) {
         L.cloudFail = (L.cloudFail || 0) + 1; st.liveStatus = 'Cloud non raggiungibile (' + (e.message || e) + '): riprovo col prossimo pezzo…'; renderLive();
         if (L.cloudFail >= 3 && !L.switching) { L.switching = true; toast('Trascrizione in cloud non disponibile: passo al modello sul dispositivo'); loadASR(liveModel(), null, LIVE_FAST).then(p => { if (st.live === L) { L.pipe = p; st.liveStatus = 'Trascrivo sul dispositivo mentre parli.'; renderLive(); } }).catch(() => {}).finally(() => { L.switching = false; }); }
@@ -466,11 +494,13 @@
     }
     L.busy = false;
     if (L.queue.length) Promise.resolve().then(() => livePump(L)); // pezzo dopo pezzo senza aspettare il timer
-    // il modello impiega più della durata della finestra per due volte di fila: non regge il tempo reale, si passa a quello veloce
+    // il modello resta indietro: finché la coda è ragionevole si aspetta (il testo arriva in ritardo, anche dopo lo stop);
+    // solo con una coda enorme si passa a quello veloce, per non tenere in memoria troppo audio
     if (st.active && L.on && L.pipe && L.pipe.qModel !== LIVE_FAST && L.pipe.qModel !== CLOUD && !L.switching) {
-      L.slow = (Date.now() - t0) > secs * 850 ? L.slow + 1 : 0;
-      if (L.slow >= 2) {
-        L.switching = true; st.liveStatus = 'Il modello scelto resta indietro sul parlato: passo a quello veloce (tiny)…'; renderLive();
+      const behind = queuedSecs(L);
+      if (behind > 120 && !L.behindTold) { L.behindTold = true; st.liveStatus = 'Il dispositivo trascrive più lentamente del parlato: il testo arriva in ritardo e si completa dopo lo stop. Tieni aperta questa scheda.'; renderLive(); }
+      if (behind > LIVE_BACKLOG_MAX) {
+        L.switching = true; st.liveStatus = 'Coda di trascrizione troppo lunga (' + Math.round(behind / 60) + ' min): passo al modello veloce (tiny)…'; renderLive();
         loadASR(LIVE_FAST).then(p => { if (st.live === L) { L.pipe = p; L.slow = 0; st.liveStatus = 'Trascrivo col modello veloce: il testo arriva con qualche decina di secondi di ritardo.'; toast('Trascrizione: passo al modello veloce per stare al passo'); renderLive(); } })
           .catch(() => {}).finally(() => { L.switching = false; });
       }
@@ -537,7 +567,7 @@
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
     catch (e) { toast(micError(e)); return false; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
-    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '' });
+    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '', lostWin: 0 });
     st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
     try { startPart(); }
     catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
@@ -596,6 +626,9 @@
 
   // il Quaderno rilegge il testo una riga per frase: è il formato che si aspetta "Salva come segmenti"
   const asText = () => st.segments.map(s => s.text).join('\n');
+  // file di testo: BOM UTF-8 (senza, Blocco note e altri lo aprono come ANSI e rovinano le lettere accentate) e minuto
+  // di ogni segmento, che il Quaderno rilegge quando il file viene caricato
+  const txtBlob = segs => new Blob(['﻿' + segs.map(s => '[' + fmt(s.t) + '] ' + s.text).join('\r\n') + '\r\n'], { type: 'text/plain;charset=utf-8' });
   function download(blob, name) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name;
@@ -615,11 +648,11 @@
     const text = asText();
     if (!text) return toast('Non c\'è nessuna trascrizione da copiare');
     try { await navigator.clipboard.writeText(text); toast('Trascrizione copiata: incollala nel Quaderno'); }
-    catch (e) { download(new Blob([text], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: ho salvato il file di testo'); }
+    catch (e) { download(txtBlob(st.segments), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: ho salvato il file di testo'); }
   };
   $('#txt').onclick = () => {
     if (!st.segments.length) return toast('Non c\'è nessuna trascrizione da salvare');
-    download(new Blob([asText()], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt');
+    download(txtBlob(st.segments), 'trascrizione-' + stamp() + '.txt');
   };
   $('#audio').onclick = () => {
     if (!st.parts.length) return toast('Non c\'è nessun audio da salvare');
@@ -909,8 +942,8 @@
     if (st.job && !st.job.files && !st.job.running) { st.job.files = fs; runJob(st.job); } else transcribeFiles(fs, $('#offModel').value);
   };
   if (qs.get('transcribe')) { showOff([], 'Il Quaderno sta per passarmi l\'audio da trascrivere…'); $('#offlineCard').scrollIntoView({ block: 'start' }); }
-  $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
-  $('#offTxt').onclick = () => { const t = offText(); if (t) download(new Blob([t], { type: 'text/plain' }), 'trascrizione-' + stamp() + '.txt'); };
+  $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
+  $('#offTxt').onclick = () => { const t = offText(); if (t) download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); };
 
   if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR }; // solo per le prove locali
   checkEnv();
