@@ -66,6 +66,7 @@
     <button class="big rec" id="start">&#9679; Registra (audio + testo)</button>
     <button class="big" id="startLive" title="Registra l'audio e lo trascrive sul dispositivo mentre parli: un solo microfono, funziona anche su Android. Serve potenza: su tablet il testo può restare un po' indietro.">&#129504; Registra + trascrivi in diretta (sul dispositivo)</button>
     <button class="big" id="startCloud" title="Registra l'audio e manda ogni pezzo di 15 secondi a Whisper large in cloud (Groq o OpenAI): testo di qualità ben superiore, serve la rete e una chiave API">&#9729; Registra + trascrivi in cloud (Whisper large)</button>
+    <button class="big" id="startLater" title="Registra solo l'audio, senza trascrivere mentre parli (il dispositivo resta libero). Alla fine trascrive tutto l'audio con calma col modello scelto sotto: il testo viene meglio e arriva da solo nella lezione.">&#127897; Registra ora, trascrivi dopo</button>
     <button class="big" id="startText" title="Avvia solo il riconoscimento vocale del browser, senza registrare l'audio">Aa Solo trascrizione</button>
     <button class="big stop" id="stop" hidden>&#9632; Ferma</button>
   </div>
@@ -88,12 +89,14 @@
 
 <div class="card" id="offlineCard">
   <p class="hint" style="margin:0 0 10px"><strong>Trascrivi una registrazione (sul dispositivo)</strong><br>
+  Il modello scelto qui vale anche per &ldquo;Registra ora, trascrivi dopo&rdquo; e per &ldquo;Trascrivi di nuovo tutto l'audio&rdquo;.<br>
   Scegli un file audio &mdash; per esempio la registrazione fatta col registratore del telefono, <strong>senza limiti di durata</strong>. La trascrizione avviene qui sul tablet, offline: la prima volta scarica il modello (qualche decina di MB), poi funziona anche senza rete. <strong>Prova prima con una registrazione corta</strong> per vedere velocit&agrave; e qualit&agrave;.</p>
   <div class="row" style="margin-bottom:10px">
     <label class="hint" style="display:flex;align-items:center;gap:8px">Modello
       <select id="offModel" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
         <option value="Xenova/whisper-tiny">Veloce (tiny)</option>
         <option value="Xenova/whisper-base" selected>Preciso (base)</option>
+        <option value="Xenova/whisper-small">Molto preciso (small, lento: ~250 MB la prima volta)</option>
         <option value="cloud">Cloud (Whisper large, serve la chiave)</option>
       </select>
     </label>
@@ -113,6 +116,7 @@
 <div class="card" id="out" hidden>
   <div class="row">
     <button class="primary" id="send" hidden>Invia al Quaderno</button>
+    <button id="retr" hidden title="Trascrive con calma tutto l'audio appena registrato col modello scelto in &quot;Trascrivi una registrazione&quot;; il testo sostituisce quello della diretta, anche nel Quaderno">Trascrivi di nuovo tutto l'audio</button>
     <button id="copy">Copia la trascrizione</button>
     <button id="audio">Salva l'audio</button>
     <button id="txt">Salva il testo</button>
@@ -238,12 +242,16 @@
       if (!st.active) renderOut();
     }
     // salvata nel Quaderno: la copia locale non serve più (resta in memoria per "Salva l'audio" finché la scheda è aperta)
-    if (d.type === 'saved') { st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed(); }
+    if (d.type === 'saved') {
+      st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed();
+      // "Registra ora, trascrivi dopo": l'audio è al sicuro nel Quaderno, ora si trascrive tutto con calma
+      if (st.trans === 'later' && st.mode === 'full' && !st.laterDone && st.parts.length) { st.laterDone = true; transcribeRecorded(); }
+    }
     // il Quaderno chiede di trascrivere una registrazione caricata lì: passa i file audio, oppure gli indirizzi da cui scaricarli
     if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (!st.active) setVocab(d.vocab); startJob(d); }
     // comandi dal Quaderno: si avvia e si ferma senza tornare su questa scheda (il permesso del microfono deve
     // essere già stato dato qui una volta). Da remoto si usa il flusso audio, che lavora anche in secondo piano.
-    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (d.title) st.linkTitle = d.title; setVocab(d.vocab); if (!st.active) start(cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
+    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (d.title) st.linkTitle = d.title; setVocab(d.vocab); if (!st.active) start(d.trans === 'later' ? 'later' : cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
     if (d.type === 'stop-remote') { if (st.active) stop(); }
   });
   // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
@@ -286,6 +294,9 @@
     $('#out').hidden = st.active || !has;
     const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
     $('#audio').hidden = !st.parts.length; // in "solo trascrizione" non c'è audio da salvare
+    const busy = !!(st.job && st.job.own) || !!st.retrBusy, retr = $('#retr');
+    retr.hidden = !st.parts.length || st.mode !== 'full'; retr.disabled = busy;
+    retr.textContent = busy ? 'Trascrizione in corso…' : st.segments.length ? 'Trascrivi di nuovo tutto l\'audio' : 'Trascrivi tutto l\'audio';
     $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
       : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione' + (st.parts.length ? ' e salva l\'audio' : '') + ', poi nel Quaderno "Carica audio" e/o "Salva come segmenti".'
       : (st.parts.length
@@ -551,7 +562,7 @@
   }
 
   function beginUi() {
-    $('#start').hidden = true; $('#startLive').hidden = true; $('#startCloud').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
+    $('#start').hidden = true; $('#startLive').hidden = true; $('#startCloud').hidden = true; $('#startLater').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
     $('#timer').classList.add('live');
     st.timer = setInterval(tick, 500);
     // checkpoint periodico: aggiorna il salvataggio recuperabile ogni 30s anche in silenzio
@@ -559,7 +570,8 @@
     st.lastSaved = Date.now(); saveMeta();
     renderLive(); renderSaved();
   }
-  // trans: 'browser' = riconoscimento del browser (bene su desktop), 'offline' = modello sul dispositivo (Android)
+  // trans: 'browser' = riconoscimento del browser (bene su desktop), 'offline' = modello sul dispositivo (Android),
+  // 'cloud' = Whisper large a pezzi, 'later' = solo audio, trascritto tutto dopo lo stop (transcribeRecorded)
   async function start(trans) {
     if (st.active) return;
     trans = trans || 'browser';
@@ -567,7 +579,7 @@
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
     catch (e) { toast(micError(e)); return false; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
-    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '', lostWin: 0 });
+    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '', lostWin: 0, laterDone: false });
     st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
     try { startPart(); }
     catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
@@ -575,7 +587,7 @@
     saveMeta();
     st.trDone = true; st.savedId = null;
     await gpuProbe; // per scegliere il modello in diretta serve sapere se la GPU c'è davvero
-    if (trans === 'cloud') startLivePipe(stream, CLOUD); else if (trans === 'offline') startLivePipe(stream, liveModel()); else { startSR(); clearTimeout(st.srNoText); st.srNoText = setTimeout(srFallback, 15000); }
+    if (trans === 'cloud') startLivePipe(stream, CLOUD); else if (trans === 'offline') startLivePipe(stream, liveModel()); else if (trans === 'later') st.liveStatus = 'Registro solo l\'audio: la trascrizione parte quando fermi, con calma (' + modelName() + ').'; else { startSR(); clearTimeout(st.srNoText); st.srNoText = setTimeout(srFallback, 15000); }
     try { st.wake = await navigator.wakeLock?.request?.('screen'); } catch (e) {}
     beginUi();
     send('start', {});
@@ -611,17 +623,21 @@
     st.wake = null;
     st.dur = Math.round((Date.now() - st.t0) / 1000);
     $('#timer').classList.remove('live');
-    $('#start').hidden = false; $('#startLive').hidden = false; $('#startCloud').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
+    $('#start').hidden = false; $('#startLive').hidden = false; $('#startCloud').hidden = false; $('#startLater').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
     saveMeta();
     renderLive();
     const sent = deliver();
+    st.liveStatus = '';
+    // "trascrivi dopo" senza Quaderno collegato: si trascrive subito qui (poi Invia, Copia o Salva)
+    if (!sent && st.trans === 'later' && st.parts.length && !st.laterDone) { st.laterDone = true; transcribeRecorded(); }
     renderOut();
     toast(sent ? 'Registrazione finita: la sto passando al Quaderno…' : st.segments.length ? 'Registrazione finita: ' + st.segments.length + ' segmenti' : 'Registrazione finita');
   }
   // trascrizione e audio insieme al Quaderno; il Blob passa per postMessage senza copie su disco
   function deliver() {
     if (!st.linked || st.sent) return false;
-    return send('stop', { durationSec: st.dur, segments: st.segments, gaps: st.gaps, pending: !!st.live, parts: st.parts.map(p => ({ blob: p.blob, durationSec: p.durationSec })) });
+    const later = st.trans === 'later' && st.mode === 'full' && !st.segments.length && !!st.parts.length;
+    return send('stop', { durationSec: st.dur, segments: st.segments, gaps: st.gaps, pending: !!st.live || later, later, parts: st.parts.map(p => ({ blob: p.blob, durationSec: p.durationSec })) });
   }
 
   // il Quaderno rilegge il testo una riga per frase: è il formato che si aspetta "Salva come segmenti"
@@ -642,6 +658,8 @@
   $('#startLive').onclick = () => start('offline');
   $('#startCloud').onclick = () => { if (!cloudKey()) { toast('Inserisci prima la chiave API nella sezione "Trascrizione in cloud"'); $('#cloudCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#cloudKey').focus(); return; } start('cloud'); };
   $('#startText').onclick = startText;
+  $('#startLater').onclick = () => start('later');
+  $('#retr').onclick = () => transcribeRecorded();
   $('#stop').onclick = stop;
   $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
   $('#copy').onclick = async () => {
@@ -897,7 +915,9 @@
   // ----- richiesta del Quaderno: trascrivere una registrazione caricata lì -----
   const jobLabel = j => (j.title ? j.title + (j.name ? ' · ' + j.name : '') : (j.name || 'registrazione'));
   async function startJob(d) {
-    const job = { recId: d.recId, lessonId: d.lessonId || lessonId, title: d.title || lessonTitle, name: d.name || '', files: null, urls: Array.isArray(d.urls) ? d.urls.filter(Boolean) : null, running: false, waiting: false };
+    // t0: solo per la trascrizione dell'ultima ripresa registrata qui (il Quaderno sostituisce i segmenti di quella ripresa);
+    // le richieste del Quaderno riguardano tutta la registrazione (t0 = 0). quiet: il testo c'è già, si sostituisce solo a lavoro finito
+    const job = { recId: d.recId, lessonId: d.lessonId || lessonId, title: d.title || lessonTitle, name: d.name || '', files: null, urls: Array.isArray(d.urls) ? d.urls.filter(Boolean) : null, running: false, waiting: false, t0: +d.t0 || 0, own: !!d.own, quiet: !!d.quiet };
     if (Array.isArray(d.files) && d.files.length) job.files = d.files.map(f => (f && f.blob instanceof Blob) ? Object.assign(f.blob, f.name && !f.blob.name ? { name: f.name } : {}) : f).filter(b => b instanceof Blob && b.size);
     // stessa richiesta ripetuta (il Quaderno la rimanda finché non ha conferma): non si riparte da capo
     if (st.job && st.job.recId === job.recId && (st.job.running || (st.job.files && !job.files))) { send('transcribing', { recId: job.recId }); return; }
@@ -924,10 +944,11 @@
     try {
       const res = await transcribeBlobs(blobs, $('#offModel').value, (msg, partial) => {
         if (msg) offState('«' + jobLabel(job) + '»: ' + msg);
-        if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false }); } }
+        if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (!job.quiet && Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false, t0: job.t0 }); } }
       });
       const segs = res.segments;
-      const ok = send('transcribed', { recId: job.recId, segments: segs, done: true });
+      if (job.own && segs.length) { st.segments = segs; st.trDone = true; renderLive(); }
+      const ok = send('transcribed', { recId: job.recId, segments: segs, done: true, t0: job.t0 });
       if (!segs.length) showOff([], '«' + jobLabel(job) + '»: nessun testo riconosciuto (audio troppo basso o vuoto).');
       else showOff(segs, '«' + jobLabel(job) + '»: fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + segs.length + ' segmenti' + (ok ? '. Trascrizione inviata al Quaderno: puoi tornare lì.' : '. Quaderno non raggiungibile: copia il testo e incollalo nella scheda Trascrizione.'));
     } catch (e) {
@@ -935,6 +956,28 @@
       send('transcribe-failed', { recId: job.recId, error: String(e && (e.message || e)) });
     }
     offBusy = false; job.running = false; if (st.job === job) st.job = null;
+    if (job.own) renderOut();
+  }
+  // "Registra ora, trascrivi dopo" e "Trascrivi di nuovo tutto l'audio": tutto l'audio appena registrato, col modello scelto,
+  // senza la fretta della diretta. Se il Quaderno ha salvato la registrazione il testo gli arriva come `transcribed` sulla
+  // stessa registrazione (e sulla stessa ripresa, grazie a t0), come per i file caricati; altrimenti resta qui da inviare.
+  function modelName() { return ({ 'Xenova/whisper-tiny': 'modello veloce', 'Xenova/whisper-base': 'modello preciso', 'Xenova/whisper-small': 'modello molto preciso', cloud: 'Whisper large in cloud' })[$('#offModel').value] || 'modello sul dispositivo'; }
+  async function transcribeRecorded() {
+    if (!st.parts.length || st.active) return;
+    if ($('#offModel').value === CLOUD && !cloudKey()) { toast('Per il cloud inserisci prima la chiave API, oppure scegli un modello sul dispositivo'); $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    const files = st.parts.map((p, i) => Object.assign(p.blob, { name: 'parte-' + String(i + 1).padStart(3, '0') }));
+    if (st.savedId && st.linked) { await startJob({ recId: st.savedId, files: files.map(b => ({ blob: b, name: b.name })), title: st.linkTitle || lessonTitle, t0: st.t0, own: true, quiet: st.segments.length > 0 }); renderOut(); return; }
+    // non collegato (o non ancora salvato nel Quaderno): il testo resta qui, "Invia al Quaderno" lo porta insieme all'audio
+    if (offBusy) { toast('Aspetta che finisca la trascrizione in corso'); return; }
+    offBusy = true; st.retrBusy = true; renderOut();
+    $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const t0 = Date.now();
+    try {
+      const res = await transcribeBlobs(files, $('#offModel').value, (msg, partial) => { if (msg) offState(msg); if (partial) showOff(partial, $('#offState').textContent); });
+      if (res.segments.length) { st.segments = res.segments; st.trDone = true; renderLive(); flushTranscribed(true); }
+      showOff(res.segments, res.segments.length ? 'Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + res.segments.length + ' segmenti. ' + (st.linked ? 'Premi "Invia al Quaderno" qui sopra.' : 'Copia il testo o salvalo, poi caricalo nel Quaderno.') : 'Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.');
+    } catch (e) { showOff([], 'Trascrizione non riuscita: ' + (e && (e.message || e)) + '.'); }
+    offBusy = false; st.retrBusy = false; renderOut();
   }
   const offText = () => offSegs.map(s => s.text).join('\n');
   $('#offFile').onchange = e => {
