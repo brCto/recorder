@@ -44,6 +44,26 @@
   .link i { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
   .link.on i { background: var(--ok); }
   .link.on { color: var(--ok); }
+  /* pannello delle trascrizioni: coda, avanzamento, esito */
+  .tasks-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .tasks-h button { min-height: 36px; padding: 6px 12px; font-size: 13px; font-weight: 500; }
+  .task { padding: 11px 0; border-top: 1px solid var(--line); }
+  .task:first-child { border-top: 0; }
+  .task-h { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
+  .task-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .task-p { font: 600 15px ui-monospace, Menlo, monospace; }
+  .badge { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; color: var(--dim);
+    background: color-mix(in srgb, var(--dim) 15%, transparent); }
+  .task.run .badge { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+  .task.wait .badge, .task.stop .badge { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .task.ok .badge { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+  .task.ko .badge { color: #fff; background: var(--accent); }
+  .bar { height: 7px; border-radius: 99px; background: var(--line); margin: 7px 0 5px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s; }
+  .bar.indet i { width: 30% !important; animation: indet 1.3s ease-in-out infinite; }
+  @keyframes indet { from { margin-left: -30%; } to { margin-left: 100%; } }
+  .task-d { color: var(--dim); font-size: 13px; }
+  .task-d b { color: var(--ink); font-weight: 600; }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
     background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 11px; font-size: 15px;
     opacity: 0; transition: .2s; pointer-events: none; max-width: 90vw; text-align: center; }
@@ -57,6 +77,11 @@
 
 <div id="warn"></div>
 <div class="card link" id="link"><i></i><span id="linkText">Quaderno non collegato</span></div>
+
+<div class="card" id="tasksCard" hidden>
+  <div class="tasks-h"><strong id="tasksSum">Trascrizioni</strong><button id="tasksClear" hidden>Togli le finite</button></div>
+  <div id="tasks"></div>
+</div>
 
 <div class="card">
   <div class="timer" id="timer">00:00</div>
@@ -184,6 +209,90 @@
     $('#warn').innerHTML = w.map(x => '<div class="notice' + (x.err ? ' err' : '') + '">' + x.html + '</div>').join('');
   }
 
+  // ----- stato delle trascrizioni: cosa è in coda, cosa sta andando (e a che punto), come sono finite le altre -----
+  // l'elenco resta salvato su questo dispositivo (7 giorni): dopo una chiusura si vede cosa si era interrotto
+  const TASKS = 'quaderno-recorder-tasks', LIVE_STATES = ['queued', 'waiting', 'download', 'loading', 'running'];
+  const tasks = (() => {
+    try {
+      const old = Date.now() - 7 * 864e5;
+      return (JSON.parse(localStorage.getItem(TASKS)) || []).filter(t => t && (t.ended || t.at) > old)
+        .map(t => LIVE_STATES.includes(t.state) ? Object.assign(t, { state: 'interrupted', ended: Date.now(), note: '' }) : t);
+    } catch (e) { return []; }
+  })();
+  let tasksSavedAt = 0, taskSeq = 0;
+  const jobs = []; // coda delle trascrizioni (vedi startJob)
+  function saveTasks(force) {
+    if (!force && Date.now() - tasksSavedAt < 4000) return;
+    tasksSavedAt = Date.now();
+    const keep = tasks.filter(t => LIVE_STATES.includes(t.state)).concat(tasks.filter(t => !LIVE_STATES.includes(t.state)).sort((a, b) => b.ended - a.ended).slice(0, 20));
+    try { localStorage.setItem(TASKS, JSON.stringify(keep)); } catch (e) {}
+  }
+  function taskNew(o) {
+    const t = Object.assign({ id: Date.now().toString(36) + (taskSeq++), at: Date.now(), state: 'queued', note: '' }, o);
+    tasks.push(t); saveTasks(true); renderTasks(); return t;
+  }
+  function taskSet(t, patch) {
+    if (!t) return;
+    const was = t.state; Object.assign(t, patch);
+    if (!LIVE_STATES.includes(t.state) && !t.ended) t.ended = Date.now();
+    saveTasks(was !== t.state); renderTasks();
+  }
+  const MODEL_NAMES = { 'Xenova/whisper-tiny': 'modello veloce', 'Xenova/whisper-base': 'modello preciso', 'Xenova/whisper-small': 'modello molto preciso', cloud: 'Whisper large in cloud' };
+  const KIND = { file: 'File', quaderno: 'Dal Quaderno', recorded: 'Registrazione', live: 'Diretta' };
+  const BADGE = { queued: 'In coda', waiting: 'Servono i file', download: 'Scarico l\'audio', loading: 'Preparo il modello', running: 'In corso', done: 'Finita', failed: 'Non riuscita', interrupted: 'Interrotta' };
+  const when = ms => { const d = new Date(ms), today = new Date().toDateString() === d.toDateString(); return (today ? '' : two(d.getDate()) + '/' + two(d.getMonth() + 1) + ' ') + two(d.getHours()) + ':' + two(d.getMinutes()); };
+  const mins = s => s < 90 ? Math.max(1, Math.round(s)) + ' s' : Math.round(s / 60) + ' min';
+  function taskHtml(t) {
+    const cls = { running: 'run', loading: 'run', download: 'run', waiting: 'wait', interrupted: 'stop', done: t.segs ? 'ok' : 'stop', failed: 'ko' }[t.state] || '';
+    const pct = t.state === 'running' && t.frac != null ? Math.min(100, Math.floor(t.frac * 100)) : t.state === 'loading' && t.load != null ? Math.floor(t.load) : null;
+    const d = [];
+    if (t.state === 'running') {
+      if (t.kind === 'live') {
+        d.push('trascritti <b>' + fmt(t.done || 0) + '</b> di ' + fmt(t.total || 0) + (t.rec ? ' registrati' : ''));
+        if (t.total - t.done > 20) d.push((t.rec ? 'indietro di ' : 'mancano ') + fmt(t.total - t.done));
+      } else {
+        if (t.done != null && t.done > 0) d.push('<b>' + fmt(t.done) + '</b>' + (t.total ? ' di ' + (t.estTotal ? '~' : '') + fmt(t.total) : ''));
+        if (t.fileCount > 1) d.push('file ' + ((t.fileIdx || 0) + 1) + ' di ' + t.fileCount);
+        if (t.phase) d.push(t.phase);
+      }
+      const el = (Date.now() - (t.started || t.at)) / 1000;
+      if (!t.rec && t.frac > 0.03 && t.frac < 1) d.push('~' + mins(el * (1 - t.frac) / t.frac) + ' alla fine');
+    }
+    if (t.state === 'loading') d.push(t.load != null ? 'scarico il modello (solo la prima volta)' : 'carico il modello');
+    if (t.state === 'done') d.push(t.segs ? '<b>' + t.segs + (t.segs === 1 ? ' segmento' : ' segmenti') + '</b>' : 'nessun testo riconosciuto');
+    if (t.state === 'failed' && t.error) d.push(esc(t.error));
+    if (t.state === 'interrupted' && !t.note) d.push(t.kind === 'quaderno' ? 'la pagina si è chiusa prima della fine: rilancia la trascrizione dal Quaderno' : t.kind === 'live' ? 'la pagina si è chiusa prima della fine: l\'audio si può ritrascrivere' : 'la pagina si è chiusa prima della fine: scegli di nuovo i file');
+    if (t.note) d.push(esc(t.note));
+    if (t.model && !LIVE_STATES.slice(0, 3).includes(t.state)) d.push(MODEL_NAMES[t.model] || t.model);
+    d.push(LIVE_STATES.includes(t.state) ? 'dalle ' + when(t.at) : (t.state === 'done' ? 'finita alle ' : 'alle ') + when(t.ended) + (t.started ? ' in ' + fmt((t.ended - t.started) / 1000) : ''));
+    const busy = ['running', 'loading', 'download'].includes(t.state);
+    return '<div class="task ' + cls + '"><div class="task-h"><span class="badge">' + BADGE[t.state] + '</span><span class="task-n" title="' + esc(t.label) + '">' + esc((KIND[t.kind] ? KIND[t.kind] + ' · ' : '') + t.label) + '</span>' + (pct != null ? '<span class="task-p">' + pct + '%</span>' : '') + '</div>'
+      + (busy ? '<div class="bar' + (pct == null ? ' indet' : '') + '"><i style="width:' + (pct || 0) + '%"></i></div>' : '')
+      + '<div class="task-d">' + d.join(' · ') + '</div></div>';
+  }
+  let tasksRaf = 0;
+  function renderTasks() {
+    if (tasksRaf) return;
+    tasksRaf = setTimeout(() => { // non requestAnimationFrame: in secondo piano non scatta, e il titolo della scheda deve aggiornarsi
+      tasksRaf = 0;
+      const order = { running: 0, loading: 0, download: 0, waiting: 1, queued: 2 };
+      const act = tasks.filter(t => LIVE_STATES.includes(t.state)).sort((a, b) => (order[a.state] - order[b.state]) || a.at - b.at);
+      const fin = tasks.filter(t => !LIVE_STATES.includes(t.state)).sort((a, b) => b.ended - a.ended).slice(0, 8);
+      $('#tasksCard').hidden = !act.length && !fin.length;
+      $('#tasks').innerHTML = act.concat(fin).map(taskHtml).join('');
+      const n = s => act.filter(t => s.includes(t.state)).length, run = n(['running', 'loading', 'download']), q = n(['queued']), w = n(['waiting']);
+      $('#tasksSum').textContent = 'Trascrizioni' + ([run ? run + ' in corso' : '', q ? q + ' in coda' : '', w ? w + ' in attesa dei file' : ''].filter(Boolean).join(', ').replace(/^./, ' · $&') || (fin.length ? ' · nessuna in corso' : ''));
+      $('#tasksClear').hidden = !fin.length;
+      // con la scheda in secondo piano si vede l'avanzamento anche dal titolo
+      const cur = act.find(t => t.state === 'running' && t.kind !== 'live' && t.frac != null);
+      document.title = (cur ? Math.floor(cur.frac * 100) + '% · ' : '') + baseTitle;
+    });
+  }
+  let baseTitle = document.title;
+  $('#tasksClear').onclick = () => { for (let i = tasks.length - 1; i >= 0; i--) if (!LIVE_STATES.includes(tasks[i].state)) tasks.splice(i, 1); saveTasks(true); renderTasks(); };
+  // "da 3 min" e "~5 min alla fine" si aggiornano anche quando non arriva niente di nuovo
+  setInterval(() => { if (tasks.some(t => LIVE_STATES.includes(t.state))) renderTasks(); }, 5000);
+
   // ----- audio a prova di crash: ogni pezzo va in IndexedDB appena arriva -----
   function idb() {
     return new Promise((res, rej) => {
@@ -256,7 +365,7 @@
   });
   // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
   function flushTranscribed(done) {
-    if (done === true) st.trDone = true;
+    if (done === true) { st.trDone = true; setTimeout(pumpJobs, 0); } // la diretta ha finito: tocca alle trascrizioni in coda
     if (!st.savedId || !st.linked) return;
     send('transcribed', { recId: st.savedId, segments: st.segments, done: !!st.trDone });
   }
@@ -294,7 +403,7 @@
     $('#out').hidden = st.active || !has;
     const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
     $('#audio').hidden = !st.parts.length; // in "solo trascrizione" non c'è audio da salvare
-    const busy = !!(st.job && st.job.own) || !!st.retrBusy, retr = $('#retr');
+    const busy = jobs.some(j => j.own), retr = $('#retr');
     retr.hidden = !st.parts.length || st.mode !== 'full'; retr.disabled = busy;
     retr.textContent = busy ? 'Trascrizione in corso…' : st.segments.length ? 'Trascrivi di nuovo tutto l\'audio' : 'Trascrivi tutto l\'audio';
     $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
@@ -303,7 +412,7 @@
           ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
           : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.'));
   }
-  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); }
+  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); if (st.live) liveTask(st.live); }
   function renderSaved() {
     const el = $('#saved'); if (!el) return;
     if (!st.active || !st.lastSaved) { el.textContent = ''; return; }
@@ -396,7 +505,9 @@
   async function startLivePipe(stream, model) {
     // t0off: il flusso può partire a registrazione già iniziata (passaggio dal riconoscimento del browser): i tempi dei segmenti restano riferiti all'inizio
     const L = { buf: [], pending: 0, consumed: 0, queue: [], busy: false, on: true, ac: null, sp: null, src: null, timer: null, pipe: null, slow: 0, switching: false, rate: LIVE_SR, t0off: st.t0 ? (Date.now() - st.t0) / 1000 : 0 };
+    if (st.live && st.live.task) taskSet(st.live.task, { state: 'interrupted', note: 'sostituita da una nuova trascrizione in diretta' });
     st.live = L; st.trDone = false;
+    L.task = taskNew({ kind: 'live', label: (st.linkTitle || lessonTitle || 'registrazione delle ' + when(st.t0 || Date.now())), state: 'loading', model, rec: true, done: 0, total: 0 });
     // la coda si smaltisce spinta dall'audio stesso (i messaggi del worklet arrivano anche in secondo piano), non solo dal timer, che in secondo piano il browser rallenta fino a una volta al minuto
     const push = ch => { if (!L.on) return; L.buf.push(ch); L.pending += ch.length; if (L.pending >= L.rate * LIVE_WIN) { cutWindow(L, false); if (L.pipe) livePump(L); } };
     // il microfono si ascolta da subito: quel che si dice mentre il modello si scarica finisce in coda e si trascrive dopo
@@ -422,14 +533,15 @@
       L.sp = node;
       L.src.connect(L.sp); L.sp.connect(L.ac.destination); // uscita muta: il nodo non copia l'input
       if (L.ac.state !== 'running') L.ac.resume().catch(() => {});
-    } catch (e) { st.liveStatus = ''; st.live = null; st.trDone = true; toast('Trascrizione in diretta non avviata: ' + (e.message || e)); renderLive(); return; }
+    } catch (e) { st.liveStatus = ''; st.live = null; st.trDone = true; taskSet(L.task, { state: 'failed', error: 'diretta non avviata: ' + (e.message || e), note: 'l\'audio viene comunque registrato' }); toast('Trascrizione in diretta non avviata: ' + (e.message || e)); renderLive(); return; }
     st.liveStatus = 'Carico il modello di trascrizione (solo la prima volta, qualche decina di MB): intanto ascolto, il testo arriva appena pronto…'; renderLive();
-    try { L.pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null && st.live === L) { st.liveStatus = 'Scarico il modello ' + Math.round(p.progress) + '%: intanto ascolto, il testo arriva appena pronto…'; renderLive(); } }, 'Xenova/whisper-tiny'); }
-    catch (e) { st.liveStatus = ''; L.on = false; closeLiveAudio(L); if (st.live === L) { st.live = null; st.trDone = true; flushTranscribed(true); } toast('Trascrizione sul dispositivo non disponibile: ' + (e.message || e) + '. L\'audio viene comunque registrato.'); renderLive(); renderOut(); return; }
+    try { L.pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null && st.live === L) { st.liveStatus = 'Scarico il modello ' + Math.round(p.progress) + '%: intanto ascolto, il testo arriva appena pronto…'; taskSet(L.task, { load: p.progress }); renderLive(); } }, 'Xenova/whisper-tiny'); }
+    catch (e) { st.liveStatus = ''; L.on = false; closeLiveAudio(L); taskSet(L.task, { state: 'failed', error: 'modello non disponibile: ' + (e.message || e), note: 'l\'audio c\'è: si può trascrivere dopo' }); if (st.live === L) { st.live = null; st.trDone = true; flushTranscribed(true); } toast('Trascrizione sul dispositivo non disponibile: ' + (e.message || e) + '. L\'audio viene comunque registrato.'); renderLive(); renderOut(); return; }
     if (st.live !== L) return;
+    taskSet(L.task, { state: 'running', model: L.pipe.qModel || model, started: Date.now() }); liveTask(L);
     if (!L.on) { // fermato durante il caricamento: si trascrive quel che si è accumulato
       cutWindow(L, true);
-      if (!L.queue.length) { st.live = null; st.liveStatus = ''; flushTranscribed(true); renderLive(); renderOut(); return; }
+      if (!L.queue.length) { st.live = null; st.liveStatus = ''; liveEnd(L); flushTranscribed(true); renderLive(); renderOut(); return; }
     }
     st.liveStatus = L.on ? (model === CLOUD ? 'Trascrivo in cloud (Whisper large) mentre parli: il testo arriva entro qualche decina di secondi.' : 'Trascrivo sul dispositivo mentre parli: il testo arriva con qualche decina di secondi di ritardo.') : 'Finisco la trascrizione: ' + L.queue.length + (L.queue.length === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…'; renderLive();
     L.timer = setInterval(() => livePump(L), 700);
@@ -438,6 +550,20 @@
     try { L.sp && (L.sp.onaudioprocess = null); L.sp && L.sp.port && (L.sp.port.onmessage = null); } catch (e) {}
     try { L.src && L.src.disconnect(); L.sp && L.sp.disconnect(); } catch (e) {}
     try { L.ac && L.ac.close(); } catch (e) {}
+  }
+  // avanzamento della diretta: audio già trascritto rispetto a quello ascoltato (in coda, in lavorazione, nel buffer)
+  function liveTask(L) {
+    if (!L.task || !LIVE_STATES.includes(L.task.state)) return;
+    const done = L.doneSec || 0, total = done + queuedSecs(L) + (L.cur || 0) + L.pending / (L.rate || LIVE_SR);
+    taskSet(L.task, { done, total, frac: total ? done / total : 0, rec: !!(st.active && L.on),
+      note: st.lostWin ? st.lostWin + (st.lostWin === 1 ? ' pezzo non trascritto' : ' pezzi non trascritti') + ' (l\'audio c\'è)' : '' });
+  }
+  function liveEnd(L) {
+    if (!L.task || !LIVE_STATES.includes(L.task.state)) return;
+    liveTask(L);
+    const n = st.segments.length;
+    taskSet(L.task, { state: 'done', segs: n, rec: false,
+      note: [L.task.note, !n ? '' : st.savedId && st.linked ? 'testo inviato al Quaderno ✓' : st.linked ? 'il testo va al Quaderno con la registrazione' : 'Quaderno non collegato: copia o salva il testo'].filter(Boolean).join(' · ') });
   }
   // in coda l'audio sta a 16 bit: metà memoria, perché con il modello indietro (scheda in secondo piano, telefono lento)
   // la coda può arrivare a decine di minuti e non deve far chiudere la scheda dal sistema
@@ -455,17 +581,19 @@
     for (let i = 0; i < audio.length; i += step) { let e = 0; const end = Math.min(audio.length, i + step); for (let j = i; j < end; j++) e += audio[j] * audio[j]; best = Math.max(best, Math.sqrt(e / (end - i))); }
     return best;
   }
+  // il punto più silenzioso (a passi di 100 ms) tra from e to: lì un taglio non spezza le parole
+  function quietest(audio, from, to, R) {
+    const step = Math.round(R / 10); let best = Infinity, cut = to;
+    for (let i = Math.max(0, Math.floor(from)); i + step <= to; i += step) { let e = 0; for (let j = i; j < i + step; j++) e += audio[j] * audio[j]; if (e < best) { best = e; cut = i + step / 2; } }
+    return Math.floor(cut);
+  }
   // stacca una finestra dal buffer e la mette in coda; il taglio cade nel punto più silenzioso degli ultimi secondi
   function cutWindow(L, all) {
     if (!L.pending) return;
     const audio = new Float32Array(L.pending); let o = 0; for (const a of L.buf) { audio.set(a, o); o += a.length; }
     let cut = audio.length;
     const R = L.rate || LIVE_SR;
-    if (!all && audio.length > R * (LIVE_WIN - LIVE_TAIL)) {
-      const from = Math.max(0, audio.length - R * LIVE_TAIL), step = Math.round(R / 10); let best = Infinity;
-      for (let i = from; i + step <= audio.length; i += step) { let e = 0; for (let j = i; j < i + step; j++) e += audio[j] * audio[j]; if (e < best) { best = e; cut = i + step / 2; } }
-      cut = Math.floor(cut);
-    }
+    if (!all && audio.length > R * (LIVE_WIN - LIVE_TAIL)) cut = quietest(audio, audio.length - R * LIVE_TAIL, audio.length, R);
     if (audio.length > R * LIVE_MAXWIN) cut = Math.min(cut, R * LIVE_MAXWIN);
     const piece = audio.subarray(0, cut), rest = audio.subarray(cut);
     L.queue.push({ audio: toI16(piece), startT: L.consumed / R, rate: R }); L.consumed += piece.length;
@@ -479,8 +607,9 @@
     L.busy = true;
     const w = L.queue.shift(); let audio = toF32(w.audio);
     const secs = audio.length / (w.rate || LIVE_SR);
+    L.cur = secs;
     // un pezzo di silenzio non va al modello: non c'è niente da trascrivere e Whisper ci inventerebbe sopra
-    if (loudest(audio, w.rate) < LIVE_SILENCE) { L.busy = false; if (L.queue.length) Promise.resolve().then(() => livePump(L)); if (!st.active && !L.queue.length) { clearInterval(L.timer); if (st.live === L) st.live = null; st.liveStatus = ''; flushTranscribed(true); toast('Trascrizione completata'); renderLive(); renderOut(); } return; }
+    if (loudest(audio, w.rate) < LIVE_SILENCE) { L.busy = false; L.cur = 0; L.doneSec = (L.doneSec || 0) + secs; liveTask(L); if (L.queue.length) Promise.resolve().then(() => livePump(L)); if (!st.active && !L.queue.length) { clearInterval(L.timer); if (st.live === L) st.live = null; st.liveStatus = ''; liveEnd(L); flushTranscribed(true); toast('Trascrizione completata'); renderLive(); renderOut(); } return; }
     try {
       if (w.rate && w.rate !== LIVE_SR) audio = await resample(audio, w.rate, LIVE_SR);
       const out = await L.pipe(audio, asrOpts(secs));
@@ -490,7 +619,7 @@
       L.fails = 0;
     } catch (e) {
       // pezzo non trascritto: si ritenta una volta in fondo alla coda, poi si conta come perso (l'audio resta nella registrazione)
-      if (!w.tries) L.queue.push({ ...w, tries: 1 }); else { st.lostWin = (st.lostWin || 0) + 1; renderLive(); }
+      if (!w.tries) { L.queue.push({ ...w, tries: 1 }); L.doneSec = (L.doneSec || 0) - secs; } else { st.lostWin = (st.lostWin || 0) + 1; renderLive(); }
       // il modello locale fallisce di continuo (worker morto, memoria): si ricarica da capo invece di perdere un pezzo dopo l'altro
       L.fails = (L.fails || 0) + 1;
       if (L.fails >= 3 && L.pipe && L.pipe.qModel !== CLOUD && !L.switching) {
@@ -503,7 +632,7 @@
         if (L.cloudFail >= 3 && !L.switching) { L.switching = true; toast('Trascrizione in cloud non disponibile: passo al modello sul dispositivo'); loadASR(liveModel(), null, LIVE_FAST).then(p => { if (st.live === L) { L.pipe = p; st.liveStatus = 'Trascrivo sul dispositivo mentre parli.'; renderLive(); } }).catch(() => {}).finally(() => { L.switching = false; }); }
       }
     }
-    L.busy = false;
+    L.busy = false; L.cur = 0; L.doneSec = (L.doneSec || 0) + secs; liveTask(L);
     if (L.queue.length) Promise.resolve().then(() => livePump(L)); // pezzo dopo pezzo senza aspettare il timer
     // il modello resta indietro: finché la coda è ragionevole si aspetta (il testo arriva in ritardo, anche dopo lo stop);
     // solo con una coda enorme si passa a quello veloce, per non tenere in memoria troppo audio
@@ -519,7 +648,7 @@
     if (!st.active) {
       const left = L.queue.length;
       st.liveStatus = left ? 'Finisco la trascrizione: ' + left + (left === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…' : '';
-      if (!left) { clearInterval(L.timer); if (st.live === L) st.live = null; flushTranscribed(true); toast('Trascrizione completata'); if (st.job && st.job.waiting && st.job.files) runJob(st.job); }
+      if (!left) { clearInterval(L.timer); if (st.live === L) st.live = null; liveEnd(L); flushTranscribed(true); toast('Trascrizione completata'); }
       renderLive(); renderOut();
     }
   }
@@ -555,7 +684,8 @@
     // modello ancora in caricamento: l'audio accumulato resta in coda, ci pensa startLivePipe appena il modello è pronto
     if (!L.pipe) { st.liveStatus = 'Aspetto il modello per trascrivere quel che ho ascoltato…'; return; }
     cutWindow(L, true);
-    if (!L.queue.length && !L.busy) { clearInterval(L.timer); st.live = null; st.liveStatus = ''; st.trDone = true; return; }
+    if (!L.queue.length && !L.busy) { clearInterval(L.timer); st.live = null; st.liveStatus = ''; st.trDone = true; liveEnd(L); return; }
+    liveTask(L);
     const n = L.queue.length + (L.busy ? 1 : 0);
     st.liveStatus = 'Finisco la trascrizione: ' + n + (n === 1 ? ' pezzo rimasto' : ' pezzi rimasti') + '…';
     if (!L.busy) livePump(L); // senza aspettare il timer (in secondo piano può essere rallentato)
@@ -630,6 +760,7 @@
     st.liveStatus = '';
     // "trascrivi dopo" senza Quaderno collegato: si trascrive subito qui (poi Invia, Copia o Salva)
     if (!sent && st.trans === 'later' && st.parts.length && !st.laterDone) { st.laterDone = true; transcribeRecorded(); }
+    pumpJobs(); // le richieste arrivate durante la registrazione partono adesso
     renderOut();
     toast(sent ? 'Registrazione finita: la sto passando al Quaderno…' : st.segments.length ? 'Registrazione finita: ' + st.segments.length + ' segmenti' : 'Registrazione finita');
   }
@@ -875,20 +1006,38 @@
     return { audio: r.getChannelData(0), durationSec: Math.round(buf.duration) };
   }
   const byName = (a, b) => new Intl.Collator('it', { numeric: true, sensitivity: 'base' }).compare(a.name || '', b.name || '');
+  // l'audio va al modello a pezzi (2 min sul dispositivo, 5 in cloud) tagliati nel punto più silenzioso: così si sa a che punto
+  // si è, il testo arriva man mano e i tratti di silenzio non vanno al modello (ci inventerebbe sopra)
+  const PIECE_LOCAL = 120, PIECE_CLOUD = 300;
+  const fileOpts = { language: 'italian', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
   // più file = una registrazione spezzettata: si trascrivono in ordine e i tempi proseguono da un file all'altro
-  async function transcribeBlobs(blobs, model, onProgress) {
-    const pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) onProgress('scarico il modello ' + (p.file ? p.file.split('/').pop() + ' ' : '') + Math.round(p.progress) + '% (solo la prima volta)', null); });
-    const segments = []; let offset = 0;
+  async function transcribeBlobs(blobs, model, onProgress, T) {
+    const upd = p => T && taskSet(T, p);
+    upd({ state: 'loading', model, load: null, fileCount: blobs.length });
+    const pipe = await loadASR(model, p => { if (p && p.status === 'progress' && p.progress != null) { onProgress('scarico il modello ' + (p.file ? p.file.split('/').pop() + ' ' : '') + Math.round(p.progress) + '% (solo la prima volta)', null); upd({ load: p.progress }); } });
+    const R = 16000, piece = (model === CLOUD ? PIECE_CLOUD : PIECE_LOCAL) * R;
+    // la percentuale conta i byte dei file: la durata di quelli non ancora aperti non si conosce
+    const sizes = blobs.map(b => b.size || 1), bytes = sizes.reduce((a, b) => a + b, 0);
+    const segments = []; let offset = 0, before = 0;
+    upd({ state: 'running', started: Date.now(), done: 0, total: null, frac: 0 });
     for (let i = 0; i < blobs.length; i++) {
       const tag = blobs.length > 1 ? 'file ' + (i + 1) + ' di ' + blobs.length + ': ' : '';
-      onProgress(tag + 'preparo l\'audio…', null);
+      onProgress(tag + 'preparo l\'audio…', null); upd({ fileIdx: i, phase: 'preparo l\'audio' });
       let dec; try { dec = await decode16k(blobs[i]); } catch (e) { throw new Error('non riesco a leggere ' + (blobs[i].name ? '"' + blobs[i].name + '"' : 'il file ' + (i + 1)) + ': prova un formato diverso (m4a, mp3, wav, webm)'); }
+      const A = dec.audio, n = A.length, last = i === blobs.length - 1;
       if (dec.durationSec > 3600) onProgress(tag + 'registrazione lunga (' + fmt(dec.durationSec) + '): la trascrizione può richiedere parecchio, tieni la scheda aperta…', null);
-      else onProgress(tag + 'trascrivo ' + fmt(dec.durationSec) + ' di audio sul dispositivo… tieni la scheda aperta.', null);
-      const out = await pipe(dec.audio, { language: 'italian', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
-      segments.push(...segsFromOutput(out, offset));
-      offset += dec.durationSec;
-      onProgress(null, segments);
+      upd({ phase: '' });
+      for (let pos = 0; pos < n;) {
+        let end = Math.min(n, pos + piece);
+        if (n - end < 10 * R) end = n; else end = quietest(A, end - LIVE_TAIL * R, end, R);
+        const cut = A.subarray(pos, end);
+        if (loudest(cut, R) >= LIVE_SILENCE) segments.push(...segsFromOutput(await pipe(cut, fileOpts), offset + pos / R));
+        pos = end;
+        const frac = (before + sizes[i] * pos / n) / bytes, done = offset + pos / R;
+        upd({ done, frac, total: last ? offset + n / R : done / frac, estTotal: !last });
+        onProgress(tag + 'trascritto ' + fmt(pos / R) + ' di ' + fmt(dec.durationSec) + ' (' + Math.floor(frac * 100) + '% del totale)… tieni la scheda aperta.', segments.slice());
+      }
+      offset += dec.durationSec; before += sizes[i];
     }
     return { segments, durationSec: offset };
   }
@@ -898,97 +1047,114 @@
     $('#offActions').hidden = !segs.length;
     offState(msg);
   }
-  // file scelti qui, senza richiesta del Quaderno: trascrizione da copiare o da inviare come registrazione senza audio
-  async function transcribeFiles(files, model) {
-    if (offBusy) { toast('Aspetta che finisca la trascrizione in corso'); return; }
-    offBusy = true; showOff([], 'Preparo l\'audio…');
-    files = files.slice().sort(byName);
-    const t0 = Date.now();
-    try {
-      const res = await transcribeBlobs(files, model, (msg, partial) => { if (msg) offState(msg); if (partial) showOff(partial, $('#offState').textContent); });
-      if (!res.segments.length) { showOff([], 'Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.'); offBusy = false; return; }
-      if (!st.active) { st.segments = res.segments; st.mode = 'file'; st.parts = []; st.sent = false; st.dur = res.durationSec; st.t0 = Date.now(); renderOut(); }
-      showOff(res.segments, 'Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + res.segments.length + ' segmenti' + (files.length > 1 ? ' da ' + files.length + ' file' : '') + '. ' + (st.linked && !st.active ? 'Premi "Invia al Quaderno" qui sopra, oppure copia il testo.' : 'Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).'));
-    } catch (e) { showOff([], 'Trascrizione non riuscita: ' + (e && (e.message || e)) + '. Se è la prima volta, controlla la rete per lo scaricamento del modello.'); }
-    offBusy = false;
-  }
-  // ----- richiesta del Quaderno: trascrivere una registrazione caricata lì -----
+  // ----- coda delle trascrizioni: file scelti qui, richieste del Quaderno, audio appena registrato. Una alla volta, in ordine;
+  //       quelle arrivate durante una registrazione (o mentre un'altra è in corso) partono appena si libera il posto -----
   const jobLabel = j => (j.title ? j.title + (j.name ? ' · ' + j.name : '') : (j.name || 'registrazione'));
+  const filesLabel = fs => (fs[0] && fs[0].name ? fs[0].name : 'file audio') + (fs.length > 1 ? ' e altri ' + (fs.length - 1) : '');
+  // kind: 'file' = scelti qui senza richiesta; 'quaderno' = chiesta dal Quaderno (recId); 'recorded' = l'audio appena registrato (own)
   async function startJob(d) {
     // t0: solo per la trascrizione dell'ultima ripresa registrata qui (il Quaderno sostituisce i segmenti di quella ripresa);
     // le richieste del Quaderno riguardano tutta la registrazione (t0 = 0). quiet: il testo c'è già, si sostituisce solo a lavoro finito
-    const job = { recId: d.recId, lessonId: d.lessonId || lessonId, title: d.title || lessonTitle, name: d.name || '', files: null, urls: Array.isArray(d.urls) ? d.urls.filter(Boolean) : null, running: false, waiting: false, t0: +d.t0 || 0, own: !!d.own, quiet: !!d.quiet };
+    const kind = d.kind || (d.own ? 'recorded' : 'quaderno');
+    const job = { recId: d.recId || null, kind, lessonId: d.lessonId || lessonId, title: d.title || (kind === 'file' ? '' : lessonTitle), name: d.name || '', files: null, urls: Array.isArray(d.urls) ? d.urls.filter(Boolean) : null, running: false, t0: +d.t0 || 0, own: !!d.own, quiet: !!d.quiet };
     if (Array.isArray(d.files) && d.files.length) job.files = d.files.map(f => (f && f.blob instanceof Blob) ? Object.assign(f.blob, f.name && !f.blob.name ? { name: f.name } : {}) : f).filter(b => b instanceof Blob && b.size);
-    // stessa richiesta ripetuta (il Quaderno la rimanda finché non ha conferma): non si riparte da capo
-    if (st.job && st.job.recId === job.recId && (st.job.running || (st.job.files && !job.files))) { send('transcribing', { recId: job.recId }); return; }
-    st.job = job; send('transcribing', { recId: job.recId });
-    if (!job.files && job.urls && job.urls.length) {
-      offState('Scarico l\'audio di «' + jobLabel(job) + '» dall\'archivio del Quaderno…');
-      try { const fs = []; for (const u of job.urls) { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); fs.push(await r.blob()); } job.files = fs; }
-      catch (e) { job.files = null; }
+    if (job.files && !job.files.length) job.files = null;
+    if (job.recId) send('transcribing', { recId: job.recId });
+    // stessa richiesta ripetuta (il Quaderno la rimanda finché non ha conferma): non si riparte da capo, al più arrivano i file
+    const same = job.recId && jobs.find(j => j.recId === job.recId);
+    if (same) {
+      if (same.running || same.files || same.fetching) return;
+      if (job.files) { same.files = job.files; taskSet(same.task, { fileCount: job.files.length }); return pumpJobs(); }
+      if (job.urls && job.urls.length) { same.urls = job.urls; return fetchJob(same); }
+      return;
     }
-    if (st.job !== job) return;
-    if (job.files) return runJob(job);
-    // l'audio non è arrivato: si chiedono i file a chi sta davanti al tablet
+    jobs.push(job);
+    job.task = taskNew({ kind, label: jobLabel(job), fileCount: job.files ? job.files.length : 0 });
+    if (job.files) return pumpJobs();
+    if (job.urls && job.urls.length) return fetchJob(job);
+    askFiles(job);
+  }
+  async function fetchJob(job) {
+    job.fetching = true; taskSet(job.task, { state: 'download', note: '' });
+    offState('Scarico l\'audio di «' + jobLabel(job) + '» dall\'archivio del Quaderno…');
+    try { const fs = []; for (const u of job.urls) { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); fs.push(await r.blob()); } job.files = fs; }
+    catch (e) { job.files = null; }
+    job.fetching = false;
+    if (!jobs.includes(job)) return;
+    if (job.files) { taskSet(job.task, { state: 'queued', fileCount: job.files.length }); pumpJobs(); } else askFiles(job);
+  }
+  // l'audio non è arrivato: si chiedono i file a chi sta davanti al tablet
+  function askFiles(job) {
+    taskSet(job.task, { state: 'waiting', note: 'il Quaderno non ha potuto passarmi l\'audio: scegli gli stessi file in "Trascrivi una registrazione"' });
     $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     showOff([], 'Il Quaderno chiede la trascrizione di «' + jobLabel(job) + '» ma non può passarmi l\'audio: scegli qui gli stessi file (anche più di uno insieme) e il testo torna nel Quaderno da solo.');
   }
+  const jobBlocker = () => st.active ? 'parte quando finisce la registrazione' : (st.live && !st.trDone) ? 'parte quando finisce la trascrizione in diretta' : offBusy ? 'parte quando finisce quella in corso' : '';
+  function pumpJobs() {
+    const ready = jobs.filter(j => j.files && !j.running); if (!ready.length) return;
+    const why = jobBlocker();
+    if (!why) return runJob(ready[0]);
+    ready.forEach((j, i) => taskSet(j.task, { state: 'queued', note: why + (ready.length > 1 ? ' (' + (i + 1) + 'ª in coda)' : '') }));
+  }
   async function runJob(job) {
-    if (st.active || (st.live && !st.trDone)) { job.waiting = true; offState('Registrazione in corso: la trascrizione di «' + jobLabel(job) + '» parte appena finisce.'); return; }
-    if (offBusy) { job.waiting = true; offState('Aspetto che finisca la trascrizione in corso, poi tocca a «' + jobLabel(job) + '».'); return; }
-    offBusy = true; job.running = true; job.waiting = false;
+    offBusy = true; job.running = true;
+    const T = job.task, lbl = jobLabel(job), toQ = !!job.recId;
+    taskSet(T, { note: '' });
+    jobs.filter(j => j !== job && j.files && !j.running).forEach((j, i) => taskSet(j.task, { state: 'queued', note: 'parte quando finisce quella in corso (' + (i + 1) + 'ª in coda)' }));
     $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    showOff([], '«' + jobLabel(job) + '»: preparo l\'audio…');
+    showOff([], '«' + lbl + '»: preparo l\'audio…');
     const blobs = job.files.slice().sort(byName);
     const t0 = Date.now(); let lastSend = 0;
     try {
       const res = await transcribeBlobs(blobs, $('#offModel').value, (msg, partial) => {
-        if (msg) offState('«' + jobLabel(job) + '»: ' + msg);
-        if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (!job.quiet && Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false, t0: job.t0 }); } }
-      });
+        if (msg) offState('«' + lbl + '»: ' + msg);
+        if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (toQ && !job.quiet && Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false, t0: job.t0 }); } }
+      }, T);
       const segs = res.segments;
-      if (job.own && segs.length) { st.segments = segs; st.trDone = true; renderLive(); }
-      const ok = send('transcribed', { recId: job.recId, segments: segs, done: true, t0: job.t0 });
-      if (!segs.length) showOff([], '«' + jobLabel(job) + '»: nessun testo riconosciuto (audio troppo basso o vuoto).');
-      else showOff(segs, '«' + jobLabel(job) + '»: fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + segs.length + ' segmenti' + (ok ? '. Trascrizione inviata al Quaderno: puoi tornare lì.' : '. Quaderno non raggiungibile: copia il testo e incollalo nella scheda Trascrizione.'));
+      if (job.own && segs.length) { st.segments = segs; st.trDone = true; renderLive(); if (!toQ) flushTranscribed(true); }
+      if (job.kind === 'file' && segs.length && !st.active) { st.segments = segs; st.mode = 'file'; st.parts = []; st.sent = false; st.dur = res.durationSec; st.t0 = Date.now(); }
+      const ok = toQ && send('transcribed', { recId: job.recId, segments: segs, done: true, t0: job.t0 });
+      const next = toQ ? (ok ? 'Trascrizione inviata al Quaderno: puoi tornare lì.' : 'Quaderno non raggiungibile: copia il testo e incollalo nella scheda Trascrizione.')
+        : st.linked && !st.active ? 'Premi "Invia al Quaderno" qui sopra, oppure copia il testo.' : 'Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).';
+      showOff(segs, '«' + lbl + '»: ' + (segs.length ? 'fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + segs.length + ' segmenti' + (blobs.length > 1 ? ' da ' + blobs.length + ' file' : '') + '. ' + next : 'nessun testo riconosciuto (audio troppo basso o vuoto).'));
+      taskSet(T, { state: 'done', segs: segs.length, frac: 1, note: !segs.length ? 'audio vuoto o troppo basso' : toQ ? (ok ? 'testo inviato al Quaderno ✓' : 'Quaderno non raggiungibile: copia il testo') : st.linked ? 'da inviare: premi "Invia al Quaderno"' : 'copia o salva il testo' });
     } catch (e) {
-      showOff([], '«' + jobLabel(job) + '»: trascrizione non riuscita. ' + (e && (e.message || e)) + '.');
-      send('transcribe-failed', { recId: job.recId, error: String(e && (e.message || e)) });
+      const err = String(e && (e.message || e));
+      showOff([], '«' + lbl + '»: trascrizione non riuscita. ' + err + '.');
+      if (toQ) send('transcribe-failed', { recId: job.recId, error: err });
+      taskSet(T, { state: 'failed', error: err });
     }
-    offBusy = false; job.running = false; if (st.job === job) st.job = null;
-    if (job.own) renderOut();
+    offBusy = false; job.running = false;
+    jobs.splice(jobs.indexOf(job), 1);
+    renderOut(); pumpJobs();
   }
+  // file scelti qui, senza richiesta del Quaderno: trascrizione da copiare o da inviare come registrazione senza audio
+  function transcribeFiles(files) { startJob({ kind: 'file', files, name: filesLabel(files) }); }
   // "Registra ora, trascrivi dopo" e "Trascrivi di nuovo tutto l'audio": tutto l'audio appena registrato, col modello scelto,
   // senza la fretta della diretta. Se il Quaderno ha salvato la registrazione il testo gli arriva come `transcribed` sulla
   // stessa registrazione (e sulla stessa ripresa, grazie a t0), come per i file caricati; altrimenti resta qui da inviare.
-  function modelName() { return ({ 'Xenova/whisper-tiny': 'modello veloce', 'Xenova/whisper-base': 'modello preciso', 'Xenova/whisper-small': 'modello molto preciso', cloud: 'Whisper large in cloud' })[$('#offModel').value] || 'modello sul dispositivo'; }
+  function modelName() { return MODEL_NAMES[$('#offModel').value] || 'modello sul dispositivo'; }
   async function transcribeRecorded() {
     if (!st.parts.length || st.active) return;
     if ($('#offModel').value === CLOUD && !cloudKey()) { toast('Per il cloud inserisci prima la chiave API, oppure scegli un modello sul dispositivo'); $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if (jobs.some(j => j.own)) { toast('La trascrizione di questa registrazione è già in corso o in coda'); return; }
     const files = st.parts.map((p, i) => Object.assign(p.blob, { name: 'parte-' + String(i + 1).padStart(3, '0') }));
-    if (st.savedId && st.linked) { await startJob({ recId: st.savedId, files: files.map(b => ({ blob: b, name: b.name })), title: st.linkTitle || lessonTitle, t0: st.t0, own: true, quiet: st.segments.length > 0 }); renderOut(); return; }
+    const linked = !!(st.savedId && st.linked);
     // non collegato (o non ancora salvato nel Quaderno): il testo resta qui, "Invia al Quaderno" lo porta insieme all'audio
-    if (offBusy) { toast('Aspetta che finisca la trascrizione in corso'); return; }
-    offBusy = true; st.retrBusy = true; renderOut();
-    $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    const t0 = Date.now();
-    try {
-      const res = await transcribeBlobs(files, $('#offModel').value, (msg, partial) => { if (msg) offState(msg); if (partial) showOff(partial, $('#offState').textContent); });
-      if (res.segments.length) { st.segments = res.segments; st.trDone = true; renderLive(); flushTranscribed(true); }
-      showOff(res.segments, res.segments.length ? 'Fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + res.segments.length + ' segmenti. ' + (st.linked ? 'Premi "Invia al Quaderno" qui sopra.' : 'Copia il testo o salvalo, poi caricalo nel Quaderno.') : 'Nessun testo riconosciuto: l\'audio potrebbe essere troppo basso o vuoto.');
-    } catch (e) { showOff([], 'Trascrizione non riuscita: ' + (e && (e.message || e)) + '.'); }
-    offBusy = false; st.retrBusy = false; renderOut();
+    await startJob({ kind: 'recorded', recId: linked ? st.savedId : null, files, title: st.linkTitle || lessonTitle, name: 'registrazione delle ' + when(st.t0), t0: st.t0, own: true, quiet: linked && st.segments.length > 0 });
+    renderOut();
   }
   const offText = () => offSegs.map(s => s.text).join('\n');
   $('#offFile').onchange = e => {
     const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return;
-    if (st.job && !st.job.files && !st.job.running) { st.job.files = fs; runJob(st.job); } else transcribeFiles(fs, $('#offModel').value);
+    const w = jobs.find(j => !j.files && !j.running && !j.fetching); // una richiesta del Quaderno aspetta proprio questi file
+    if (w) { w.files = fs; taskSet(w.task, { state: 'queued', note: '', fileCount: fs.length }); pumpJobs(); } else transcribeFiles(fs);
   };
   if (qs.get('transcribe')) { showOff([], 'Il Quaderno sta per passarmi l\'audio da trascrivere…'); $('#offlineCard').scrollIntoView({ block: 'start' }); }
   $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
   $('#offTxt').onclick = () => { const t = offText(); if (t) download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); };
 
-  if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR }; // solo per le prove locali
+  if (location.hostname === 'localhost') window.__rec = { st, cutWindow, livePump, startJob, runJob, transcribeBlobs, segsFromOutput, LIVE_SR, jobs, tasks }; // solo per le prove locali
   checkEnv();
   if (avoid.big) $('#offModel').value = LIVE_FAST;
   $('#cloudKey').value = cloudKey();
@@ -997,7 +1163,7 @@
   $('#cloudState').textContent = cloudKey() ? 'Chiave salvata (' + cloudCfg(cloudKey()).name + '): "Registra + trascrivi in cloud" è pronto.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.';
   if (avoid.crashed) $('#warn').insertAdjacentHTML('beforeend', '<div class="notice">L\'ultima volta la pagina si &egrave; chiusa mentre caricava il modello di trascrizione' + (avoid.crashed.device === 'webgpu' ? ' sulla GPU: d\'ora in poi qui uso il processore (WASM)' : ' &ldquo;' + esc(String(avoid.crashed.model).replace('Xenova/whisper-', '')) + '&rdquo;: d\'ora in poi qui uso il modello veloce (tiny)') + '. L\'audio della registrazione interrotta, se c\'era, &egrave; recuperabile qui sotto.</div>');
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
-  applyOnly();
+  applyOnly(); baseTitle = document.title; renderTasks();
   renderLink();
   recover();
 })();
