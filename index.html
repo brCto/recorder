@@ -64,6 +64,31 @@
   @keyframes indet { from { margin-left: -30%; } to { margin-left: 100%; } }
   .task-d { color: var(--dim); font-size: 13px; }
   .task-d b { color: var(--ink); font-weight: 600; }
+  /* scelta della modalità: un riquadro per modalità, quello scelto evidenziato; sotto, i passi da seguire */
+  .modes { display: grid; gap: 8px; grid-template-columns: 1fr; }
+  @media (min-width: 640px) { .modes { grid-template-columns: 1fr 1fr; } }
+  .mode { text-align: left; display: grid; grid-template-columns: 30px 1fr; gap: 4px 10px; align-items: start; padding: 11px 13px; min-height: 0; font-weight: 500; }
+  .mode .ic { font-size: 20px; line-height: 1.2; grid-row: 1 / span 2; }
+  .mode .nm { font-weight: 600; font-size: 15px; }
+  .mode .wh { color: var(--dim); font-size: 13px; font-weight: 400; line-height: 1.4; }
+  .mode[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .mode[aria-pressed="true"] .nm::after { content: " ✓"; color: var(--accent); }
+  .mode.rec-badge .nm::before { content: "Consigliata · "; color: var(--ok); font-size: 12px; font-weight: 600; }
+  .mode:disabled { opacity: .45; }
+  .steps { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 7%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); font-size: 14px; }
+  .steps h3 { margin: 0 0 6px; font-size: 14px; }
+  .steps ol { margin: 0; padding-left: 22px; display: grid; gap: 5px; }
+  .steps li b { font-weight: 600; }
+  .steps .note { color: var(--dim); font-size: 13px; margin: 8px 0 0; }
+  .steps .note b { color: var(--ink); font-weight: 600; }
+  .modelrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 14px; }
+  select.sel { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); max-width: 100%; }
+  /* durante la registrazione: cosa fare adesso */
+  .now { margin-top: 12px; padding: 11px 13px; border-radius: 10px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); font-size: 14px; }
+  .now b { font-weight: 600; }
+  details.more { margin-bottom: 14px; }
+  details.more summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--dim); padding: 6px 0; }
+  details.more .card { margin-top: 8px; }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
     background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 11px; font-size: 15px;
     opacity: 0; transition: .2s; pointer-events: none; max-width: 90vw; text-align: center; }
@@ -73,7 +98,7 @@
 <body>
 
 <h1>Registratore del Quaderno</h1>
-<p class="sub" id="sub">Registra la lezione e trascrivila in diretta: audio e testo tornano nel Quaderno da soli.</p>
+<p class="sub" id="sub">Registra la lezione e trascrivila: audio e testo tornano nel Quaderno da soli.</p>
 
 <div id="warn"></div>
 <div class="card link" id="link"><i></i><span id="linkText">Quaderno non collegato</span></div>
@@ -83,27 +108,42 @@
   <div id="tasks"></div>
 </div>
 
+<div class="card" id="modesCard">
+  <p class="hint" style="margin:0 0 10px;color:var(--ink)"><strong>1. Scegli come registrare</strong> <span class="hint">(la scelta resta salvata su questo dispositivo)</span></p>
+  <div class="modes" id="modes"></div>
+  <div class="steps" id="modeSteps"></div>
+  <div class="modelrow" id="modelRow" hidden>
+    <label class="hint" for="offModel">Modello per la trascrizione sul dispositivo</label>
+    <select id="offModel" class="sel">
+      <option value="Xenova/whisper-tiny">Veloce (tiny) &mdash; meno preciso, va anche su telefoni lenti</option>
+      <option value="Xenova/whisper-base" selected>Preciso (base) &mdash; scelta normale, ~75 MB la prima volta</option>
+      <option value="Xenova/whisper-small">Molto preciso (small) &mdash; lento, ~250 MB la prima volta</option>
+      <option value="cloud">Cloud (Whisper large) &mdash; serve la chiave API qui sotto</option>
+    </select>
+  </div>
+</div>
+
 <div class="card">
+  <p class="hint" style="margin:0 0 8px;color:var(--ink)"><strong>2. Registra</strong></p>
   <div class="timer" id="timer">00:00</div>
   <p class="hint" id="count" style="margin:4px 0 2px">Nessun segmento</p>
   <p class="hint" id="saved" style="margin:0 0 14px;color:var(--ok)"></p>
   <div class="row">
-    <button class="big rec" id="start">&#9679; Registra (audio + testo)</button>
-    <button class="big" id="startLive" title="Registra l'audio e lo trascrive sul dispositivo mentre parli: un solo microfono, funziona anche su Android. Serve potenza: su tablet il testo può restare un po' indietro.">&#129504; Registra + trascrivi in diretta (sul dispositivo)</button>
-    <button class="big" id="startCloud" title="Registra l'audio e manda ogni pezzo di 15 secondi a Whisper large in cloud (Groq o OpenAI): testo di qualità ben superiore, serve la rete e una chiave API">&#9729; Registra + trascrivi in cloud (Whisper large)</button>
-    <button class="big" id="startLater" title="Registra solo l'audio, senza trascrivere mentre parli (il dispositivo resta libero). Alla fine trascrive tutto l'audio con calma col modello scelto sotto: il testo viene meglio e arriva da solo nella lezione.">&#127897; Registra ora, trascrivi dopo</button>
-    <button class="big" id="startText" title="Avvia solo il riconoscimento vocale del browser, senza registrare l'audio">Aa Solo trascrizione</button>
+    <button class="big rec" id="start">&#9679; Registra</button>
     <button class="big stop" id="stop" hidden>&#9632; Ferma</button>
   </div>
-  <div class="live" id="live"><span class="hint">Premi Registra: qui compare il testo mentre parli. Puoi passare al Quaderno (Lavagna, appunti) mentre registri: l'audio continua anche con questa scheda in secondo piano.<br><br>Se su Android il testo non compare durante la registrazione, prova <strong>Solo trascrizione</strong>: dà il testo dal vivo ma senza salvare l'audio.</span></div>
+  <div class="now" id="now" hidden></div>
+  <div class="live" id="live"><span class="hint">Qui compare il testo trascritto (nelle modalit&agrave; che trascrivono mentre registri) e lo stato della trascrizione.</span></div>
 </div>
 
-<div class="card" id="splitCard" hidden>
-  <p class="hint" style="margin:0" id="splitLinks"></p>
-</div>
+<details class="more" id="splitCard" hidden>
+  <summary>Due schede separate: una per l'audio, una per il testo (uso avanzato)</summary>
+  <div class="card"><p class="hint" style="margin:0" id="splitLinks"></p></div>
+</details>
 
 <div class="card" id="cloudCard">
-  <p class="hint" style="margin:0 0 10px"><strong>Trascrizione in cloud (Whisper large)</strong><br>
+  <p class="hint" style="margin:0 0 10px"><strong style="color:var(--ink)">Chiave per la trascrizione in cloud (Whisper large)</strong><br>
+  Serve solo per la modalit&agrave; &laquo;in cloud&raquo; e per il modello &laquo;Cloud&raquo; della lista in alto.<br>
   Con una chiave API il registratore manda l'audio, a pezzi di 15 secondi, a Whisper large su <strong>Groq</strong> (gratuito entro un tetto giornaliero, chiave che inizia con <code>gsk_</code>, da console.groq.com) o su <strong>OpenAI</strong> (a pagamento, chiave <code>sk-</code>). Il testo &egrave; molto migliore di quello del modello sul dispositivo. L'audio passa dal servizio scelto; la chiave resta solo nel browser di questo dispositivo.</p>
   <div class="row">
     <input id="cloudKey" type="password" autocomplete="off" spellcheck="false" placeholder="Chiave API (gsk_… oppure sk-…)" style="flex:1 1 260px;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
@@ -113,19 +153,14 @@
 </div>
 
 <div class="card" id="offlineCard">
-  <p class="hint" style="margin:0 0 10px"><strong>Trascrivi una registrazione (sul dispositivo)</strong><br>
-  Il modello scelto qui vale anche per &ldquo;Registra ora, trascrivi dopo&rdquo; e per &ldquo;Trascrivi di nuovo tutto l'audio&rdquo;.<br>
-  Scegli un file audio &mdash; per esempio la registrazione fatta col registratore del telefono, <strong>senza limiti di durata</strong>. La trascrizione avviene qui sul tablet, offline: la prima volta scarica il modello (qualche decina di MB), poi funziona anche senza rete. <strong>Prova prima con una registrazione corta</strong> per vedere velocit&agrave; e qualit&agrave;.</p>
-  <div class="row" style="margin-bottom:10px">
-    <label class="hint" style="display:flex;align-items:center;gap:8px">Modello
-      <select id="offModel" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
-        <option value="Xenova/whisper-tiny">Veloce (tiny)</option>
-        <option value="Xenova/whisper-base" selected>Preciso (base)</option>
-        <option value="Xenova/whisper-small">Molto preciso (small, lento: ~250 MB la prima volta)</option>
-        <option value="cloud">Cloud (Whisper large, serve la chiave)</option>
-      </select>
-    </label>
-  </div>
+  <p class="hint" style="margin:0 0 6px;color:var(--ink)"><strong>Trascrivi un file gi&agrave; registrato</strong></p>
+  <p class="hint" style="margin:0 0 10px">Per una registrazione fatta con un'altra app (registratore del telefono, WhatsApp, PC), <strong>senza limiti di durata</strong>. Cosa fare:</p>
+  <ol class="hint" style="margin:0 0 12px;padding-left:22px;display:grid;gap:4px">
+    <li>Scegli il modello in alto (&laquo;Modello per la trascrizione sul dispositivo&raquo;: la prima volta lo scarica, poi funziona anche senza rete).</li>
+    <li>Premi <strong>Scegli il file audio</strong>: puoi sceglierne pi&ugrave; di uno insieme, vengono uniti in ordine di nome.</li>
+    <li>Aspetta la fine (l'avanzamento &egrave; nel riquadro &laquo;Trascrizioni&raquo; in alto), poi <strong>Invia al Quaderno</strong> oppure copia il testo.</li>
+  </ol>
+  <p class="hint" style="margin:0 0 10px">Se invece il file l'hai gi&agrave; caricato nel Quaderno, usa l&igrave; &laquo;Trascrivi sul tablet&raquo;: la richiesta arriva qui da sola.</p>
   <div class="row">
     <label class="big" for="offFile" style="text-align:center;cursor:pointer">&#128193; Scegli il file audio</label>
     <input id="offFile" type="file" multiple accept="audio/*,video/mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.webm,.aac,.amr,.3gp" hidden>
@@ -141,7 +176,7 @@
 <div class="card" id="out" hidden>
   <div class="row">
     <button class="primary" id="send" hidden>Invia al Quaderno</button>
-    <button id="retr" hidden title="Trascrive con calma tutto l'audio appena registrato col modello scelto in &quot;Trascrivi una registrazione&quot;; il testo sostituisce quello della diretta, anche nel Quaderno">Trascrivi di nuovo tutto l'audio</button>
+    <button id="retr" hidden title="Trascrive con calma tutto l'audio appena registrato col modello scelto in alto; il testo sostituisce quello della diretta, anche nel Quaderno">Trascrivi di nuovo tutto l'audio</button>
     <button id="copy">Copia la trascrizione</button>
     <button id="audio">Salva l'audio</button>
     <button id="txt">Salva il testo</button>
@@ -150,10 +185,10 @@
   <p class="hint" id="outHint" style="margin:12px 0 0"></p>
 </div>
 
-<div class="card">
-  <p class="hint" style="margin:0 0 8px"><strong>Perch&eacute; questa pagina esiste</strong></p>
-  <p class="hint" style="margin:0">Il Quaderno gira dentro un frame di claude.ai che non riceve il permesso del microfono (la Permissions Policy del sito lo concede solo a claude.ai stesso). Questa pagina invece &egrave; una pagina principale su un dominio suo: qui il microfono si chiede normalmente. Aprila dal Quaderno con &ldquo;Registra dal tablet&rdquo; e i segmenti trascritti gli arrivano in diretta; a fine registrazione anche l'audio.</p>
-</div>
+<details class="more">
+  <summary>Perch&eacute; questa pagina esiste</summary>
+  <div class="card"><p class="hint" style="margin:0">Il Quaderno gira dentro un frame di claude.ai che non riceve il permesso del microfono (la Permissions Policy del sito lo concede solo a claude.ai stesso). Questa pagina invece &egrave; una pagina principale su un dominio suo: qui il microfono si chiede normalmente. Aprila dal Quaderno con &ldquo;Registra dal tablet&rdquo; e i segmenti trascritti gli arrivano in diretta; a fine registrazione anche l'audio.</p></div>
+</details>
 
 <div id="toast"></div>
 
@@ -163,8 +198,8 @@
   const $ = s => document.querySelector(s);
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const qs = new URLSearchParams(location.search);
-  const lessonId = qs.get('lesson') || '';
-  const lessonTitle = qs.get('title') || '';
+  let lessonId = qs.get('lesson') || '';
+  let lessonTitle = qs.get('title') || '';
   // stesse parti da 10 minuti del Quaderno: l'archivio accetta file fino a 20 MB (32 kbit/s ≈ 2,4 MB a parte)
   const PART_MS = 5 * 60 * 1000; // parti audio complete ogni 5 min: checkpoint più frequenti, file più piccoli
   const META = 'quaderno-recorder-draft', DB_NAME = 'quaderno-recorder';
@@ -351,8 +386,9 @@
       if (!st.active) renderOut();
     }
     // salvata nel Quaderno: la copia locale non serve più (resta in memoria per "Salva l'audio" finché la scheda è aperta)
+    if (d.type === 'rejected') { st.recovered = true; renderOut(); toast('Il Quaderno non può salvarla' + (d.error ? ': ' + d.error : '') + '. Salva audio e testo da qui.'); return; }
     if (d.type === 'saved') {
-      st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); flushTranscribed();
+      st.sent = true; st.savedId = d.id || null; idbClear(); clearMeta(); renderOut(); toast('Il Quaderno ha salvato la registrazione'); if (st.flushPending) flushTranscribed();
       // "Registra ora, trascrivi dopo": l'audio è al sicuro nel Quaderno, ora si trascrive tutto con calma
       if (st.trans === 'later' && st.mode === 'full' && !st.laterDone && st.parts.length) { st.laterDone = true; transcribeRecorded(); }
     }
@@ -360,13 +396,14 @@
     if (d.type === 'transcribe') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (!st.active) setVocab(d.vocab); startJob(d); }
     // comandi dal Quaderno: si avvia e si ferma senza tornare su questa scheda (il permesso del microfono deve
     // essere già stato dato qui una volta). Da remoto si usa il flusso audio, che lavora anche in secondo piano.
-    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (d.title) st.linkTitle = d.title; setVocab(d.vocab); if (!st.active) start(d.trans === 'later' ? 'later' : cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
+    if (d.type === 'start-remote') { if (!st.quadernoOrigin) { st.quadernoOrigin = ev.origin; st.linked = true; renderLink(); } if (d.lessonId && !st.active) { lessonId = d.lessonId; lessonTitle = d.title || lessonTitle; } if (d.title) st.linkTitle = d.title; setVocab(d.vocab); if (!st.active) start(d.trans === 'later' ? 'later' : cloudKey() ? 'cloud' : 'offline').then(ok => { if (!ok) send('start-failed', { error: 'microfono non disponibile: apri la scheda del registratore e premi Registra' }); }); }
     if (d.type === 'stop-remote') { if (st.active) stop(); }
   });
   // dopo lo stop la trascrizione può arrivare in ritardo (coda del modello): va al Quaderno come aggiornamento della registrazione salvata
   function flushTranscribed(done) {
     if (done === true) { st.trDone = true; setTimeout(pumpJobs, 0); } // la diretta ha finito: tocca alle trascrizioni in coda
-    if (!st.savedId || !st.linked) return;
+    if (!st.savedId || !st.linked) { st.flushPending = true; return; } // il Quaderno non ha ancora l'id: si rimanda al suo "saved"
+    st.flushPending = false;
     send('transcribed', { recId: st.savedId, segments: st.segments, done: !!st.trDone });
   }
   function renderLink() {
@@ -388,10 +425,10 @@
     const noTrans = st.active && SR && st.trans === 'browser' && !st.srBlocked && !st.segments.length && !st.interim && (Date.now() - st.t0) > 12000
       ? (st.mode === 'text'
           ? '<div class="gap">Il riconoscimento vocale non sta producendo testo su questo browser: qui non è disponibile. Conviene registrare con l\'app registratore del telefono (molte hanno la trascrizione integrata) e caricare l\'audio nel Quaderno.</div>'
-          : '<div class="gap">La trascrizione in diretta non arriva mentre si registra l\'audio (tipico su Android). L\'audio viene comunque salvato nella lezione. Per avere il testo dal vivo, ferma e usa <strong>Solo trascrizione</strong> (senza audio).</div>') : '';
+          : '<div class="gap">La trascrizione in diretta non arriva mentre si registra l\'audio (tipico su Android). L\'audio viene comunque salvato nella lezione. Tra poco passo da solo al modello sul dispositivo.</div>') : '';
     const liveStatus = st.liveStatus ? '<div class="gap">' + esc(st.liveStatus) + '</div>' : '';
     const live = $('#live');
-    live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans + liveStatus) || (st.liveStatus ? '<span class="hint">' + esc(st.liveStatus) + '</span>' : '<span class="hint">In ascolto&hellip;</span>');
+    live.innerHTML = (last + (st.interim ? '<div class="interim">' + esc(st.interim) + '</div>' : '') + gap + noTrans + liveStatus) || (st.liveStatus ? '<span class="hint">' + esc(st.liveStatus) + '</span>' : st.active ? '<span class="hint">In ascolto&hellip;</span>' : '<span class="hint">Qui compare il testo trascritto (nelle modalit&agrave; che trascrivono mentre registri) e lo stato della trascrizione.</span>');
     live.scrollTop = live.scrollHeight;
     $('#count').textContent = (st.segments.length ? st.segments.length + (st.segments.length === 1 ? ' segmento' : ' segmenti') : (st.active ? 'In ascolto…' : 'Nessun segmento'))
       + (st.gaps.length ? ' · ' + st.gaps.length + (st.gaps.length === 1 ? ' buco nella trascrizione' : ' buchi nella trascrizione') : '')
@@ -406,13 +443,13 @@
     const busy = jobs.some(j => j.own), retr = $('#retr');
     retr.hidden = !st.parts.length || st.mode !== 'full'; retr.disabled = busy;
     retr.textContent = busy ? 'Trascrizione in corso…' : st.segments.length ? 'Trascrivi di nuovo tutto l\'audio' : 'Trascrivi tutto l\'audio';
-    $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.'
+    $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : busy ? 'La trascrizione di tutto l\'audio è in corso (avanzamento nel riquadro «Trascrizioni» in alto): tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? (busy ? 'Il Quaderno ha già l\'audio; il testo lo raggiunge appena pronto.' : 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.')
       : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione' + (st.parts.length ? ' e salva l\'audio' : '') + ', poi nel Quaderno "Carica audio" e/o "Salva come segmenti".'
       : (st.parts.length
           ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
           : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.'));
   }
-  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); if (st.live) liveTask(st.live); }
+  function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); renderNow(); if (st.live) liveTask(st.live); }
   function renderSaved() {
     const el = $('#saved'); if (!el) return;
     if (!st.active || !st.lastSaved) { el.textContent = ''; return; }
@@ -692,7 +729,7 @@
   }
 
   function beginUi() {
-    $('#start').hidden = true; $('#startLive').hidden = true; $('#startCloud').hidden = true; $('#startLater').hidden = true; $('#startText').hidden = true; $('#stop').hidden = false; $('#out').hidden = true;
+    $('#start').hidden = true; $('#modesCard').hidden = true; $('#stop').hidden = false; $('#out').hidden = true; renderNow();
     $('#timer').classList.add('live');
     st.timer = setInterval(tick, 500);
     // checkpoint periodico: aggiorna il salvataggio recuperabile ogni 30s anche in silenzio
@@ -709,7 +746,7 @@
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
     catch (e) { toast(micError(e)); return false; }
     await idbClear(); clearMeta(); $('#warn').querySelectorAll('.recov').forEach(n => n.remove());
-    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '', lostWin: 0, laterDone: false });
+    Object.assign(st, { active: true, mode: 'full', trans, stream, segments: [], parts: [], partIndex: 0, seq: 0, interim: '', gaps: [], gapFrom: 0, srFails: 0, srBlocked: false, sent: false, recovered: false, dur: 0, t0: Date.now(), liveStatus: '', lostWin: 0, laterDone: false, flushPending: false });
     st.mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
     try { startPart(); }
     catch (e) { st.active = false; stream.getTracks().forEach(t => t.stop()); toast('Registrazione non avviata: ' + (e.message || e.name)); return; }
@@ -753,7 +790,7 @@
     st.wake = null;
     st.dur = Math.round((Date.now() - st.t0) / 1000);
     $('#timer').classList.remove('live');
-    $('#start').hidden = false; $('#startLive').hidden = false; $('#startCloud').hidden = false; $('#startLater').hidden = false; $('#startText').hidden = false; $('#stop').hidden = true;
+    $('#start').hidden = false; $('#modesCard').hidden = false; $('#stop').hidden = true; renderNow();
     saveMeta();
     renderLive();
     const sent = deliver();
@@ -785,11 +822,82 @@
   const stamp = () => new Date(st.t0 || Date.now()).toLocaleString('sv').replace(/[: ]/g, '-').slice(0, 16);
   const ext = p => (/mp4/.test(p.blob.type) ? '.m4a' : '.webm');
 
-  $('#start').onclick = () => start('browser');
-  $('#startLive').onclick = () => start('offline');
-  $('#startCloud').onclick = () => { if (!cloudKey()) { toast('Inserisci prima la chiave API nella sezione "Trascrizione in cloud"'); $('#cloudCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#cloudKey').focus(); return; } start('cloud'); };
-  $('#startText').onclick = startText;
-  $('#startLater').onclick = () => start('later');
+  // ----- modalità: una sola scelta, con i passi da seguire; il pulsante Registra avvia quella scelta -----
+  const MODE_KEY = 'quaderno-recorder-mode';
+  const MODES = [
+    { id: 'later', ic: '🎙', name: 'Registra ora, trascrivi dopo', btn: 'Registra ora, trascrivi dopo', model: true,
+      when: 'La scelta normale su tablet e telefono: durante la lezione il dispositivo resta libero e leggero, il testo viene meglio.',
+      steps: ['Premi <b>Registra</b> e appoggia il dispositivo vicino al docente. Puoi passare al Quaderno (Lavagna, appunti): l\'audio continua anche con questa scheda in secondo piano.',
+        'A fine lezione premi <b>Ferma</b>: qui, oppure dal Quaderno con &laquo;Ferma e salva&raquo;.',
+        '<b>Tieni aperta questa scheda</b>: la trascrizione di tutto l\'audio parte da sola e l\'avanzamento compare nel riquadro &laquo;Trascrizioni&raquo; in alto. Audio e testo finiscono nella lezione del Quaderno senza fare altro.'],
+      note: 'Trascrive col modello scelto qui sotto. La prima volta scarica il modello (serve la rete), poi funziona anche offline. Con &laquo;Cloud&raquo; serve la chiave API pi&ugrave; in basso.' },
+    { id: 'offline', ic: '🧠', name: 'Registra e trascrivi in diretta', btn: 'Registra e trascrivi in diretta', model: true,
+      when: 'Vuoi leggere il testo mentre il docente parla, senza rete e senza chiavi. Chiede potenza al dispositivo.',
+      steps: ['Premi <b>Registra</b>. La prima volta scarica il modello (serve la rete): intanto ascolta gi&agrave;, il testo arriva appena pronto.',
+        'Il testo compare qui sotto con qualche decina di secondi di ritardo. Se il dispositivo &egrave; lento resta indietro: non si perde nulla, si completa dopo lo stop.',
+        'A fine lezione premi <b>Ferma</b> e <b>tieni aperta la scheda</b> finch&eacute; non compare &laquo;Trascrizione completata&raquo;. Audio e testo vanno al Quaderno da soli.'],
+      note: 'Modello: quello scelto qui sotto (&laquo;Preciso&raquo; va bene; &laquo;Veloce&raquo; su telefoni lenti).' },
+    { id: 'cloud', ic: '☁', name: 'Registra e trascrivi in cloud', btn: 'Registra e trascrivi in cloud', key: true,
+      when: 'Il testo migliore (Whisper large). Serve una chiave API (Groq &egrave; gratuito entro un tetto) e la rete per tutta la lezione.',
+      steps: ['Una volta sola: incolla la chiave nel riquadro &laquo;Chiave per la trascrizione in cloud&raquo; qui sotto e premi &laquo;Prova la chiave&raquo;.',
+        'Premi <b>Registra</b>: ogni 15 secondi l\'audio va a Whisper e il testo compare qui sotto.',
+        'A fine lezione premi <b>Ferma</b>. Se il cloud non risponde, il registratore passa da solo al modello sul dispositivo.'],
+      note: 'L\'audio passa dal servizio scelto (Groq o OpenAI); la chiave resta solo in questo browser.' },
+    { id: 'browser', ic: '💻', name: 'Registra col riconoscimento del browser', btn: 'Registra (riconoscimento del browser)',
+      when: 'Da computer con Chrome o Edge: testo immediato, senza scaricare modelli. Su Android di solito non parte mentre si registra.',
+      steps: ['Premi <b>Registra</b> e <b>tieni questa scheda in primo piano</b>: in secondo piano il riconoscimento del browser si ferma (il registratore passa allora da solo al modello sul dispositivo).',
+        'Se dopo 15 secondi non compare testo (tipico su Android), il registratore passa da solo al modello sul dispositivo o al cloud, se c\'&egrave; la chiave.',
+        'A fine lezione premi <b>Ferma</b>: audio e testo vanno al Quaderno.'],
+      note: '' },
+    { id: 'text', ic: 'Aa', name: 'Solo trascrizione, senza audio', btn: 'Solo trascrizione', sr: true,
+      when: 'Ti serve solo il testo dal vivo e non vuoi salvare l\'audio. Usa il riconoscimento del browser.',
+      steps: ['Premi <b>Registra</b>: parte solo il riconoscimento vocale, nessun file audio.',
+        'Tieni questa scheda in primo piano e lo schermo acceso: in secondo piano il riconoscimento si ferma.',
+        'A fine lezione premi <b>Ferma</b>: il testo va al Quaderno (oppure copialo e incollalo nella scheda Trascrizione).'],
+      note: '' },
+  ];
+  const modesAvailable = () => MODES.filter(m => only === 'text' ? m.id === 'text' : only === 'audio' ? m.id !== 'text' : true);
+  let curMode = (() => { try { return localStorage.getItem(MODE_KEY) || ''; } catch (e) { return ''; } })();
+  const modeOf = id => MODES.find(m => m.id === id);
+  function pickMode(id, save) {
+    if (!modesAvailable().some(m => m.id === id)) id = modesAvailable()[0].id;
+    curMode = id; if (save) { try { localStorage.setItem(MODE_KEY, id); } catch (e) {} }
+    renderModes();
+  }
+  function renderModes() {
+    const list = modesAvailable(); const m = modeOf(curMode) || list[0];
+    $('#modes').innerHTML = list.map(x => '<button class="mode' + (x.id === 'later' && isAndroid ? ' rec-badge' : '') + '" data-mode="' + x.id + '" aria-pressed="' + (x === m) + '"' + (x.sr && !SR ? ' disabled title="Questo browser non ha il riconoscimento vocale"' : '') + '><span class="ic">' + x.ic + '</span><span class="nm">' + x.name + '</span><span class="wh">' + x.when + (x.sr && !SR ? ' <b>Non disponibile in questo browser.</b>' : '') + '</span></button>').join('');
+    const cloudOk = !!cloudKey();
+    $('#modeSteps').innerHTML = '<h3>Cosa devi fare · ' + m.name + '</h3><ol>' + m.steps.map(t => '<li>' + t + '</li>').join('') + '</ol>'
+      + (m.note ? '<p class="note">' + m.note + '</p>' : '')
+      + (m.key && !cloudOk ? '<p class="note"><b>Chiave API mancante:</b> senza chiave questa modalit&agrave; non parte. Inseriscila nel riquadro pi&ugrave; in basso.</p>' : '')
+      + (m.model && $('#offModel').value === CLOUD && !cloudOk ? '<p class="note"><b>Hai scelto il modello Cloud senza chiave:</b> scegli un modello sul dispositivo o inserisci la chiave.</p>' : '');
+    $('#modelRow').hidden = !m.model;
+    $('#start').innerHTML = '&#9679; ' + m.btn;
+  }
+  $('#modes').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b && !b.disabled) pickMode(b.dataset.mode, true); });
+  $('#offModel').addEventListener('change', renderModes);
+  $('#start').onclick = () => {
+    const m = modeOf(curMode) || modesAvailable()[0];
+    if (m.id === 'text') return startText();
+    if (m.id === 'cloud' && !cloudKey()) { toast('Inserisci prima la chiave API nel riquadro "Chiave per la trascrizione in cloud"'); $('#cloudCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#cloudKey').focus(); return; }
+    if (m.model && $('#offModel').value === CLOUD && !cloudKey()) { toast('Il modello "Cloud" richiede la chiave API: scegli un modello sul dispositivo o inserisci la chiave'); return; }
+    start(m.id);
+  };
+  // durante la registrazione: cosa sta succedendo e cosa fare (segue la modalità effettiva, che può cambiare da sola)
+  let nowLast = '';
+  function renderNow() {
+    const el = $('#now'); if (!el) return;
+    if (!st.active) { el.hidden = true; nowLast = ''; return; }
+    let t;
+    if (st.mode === 'text') t = '<b>Solo testo, niente audio.</b> Tieni questa scheda in primo piano con lo schermo acceso. Alla fine premi <b>Ferma</b>.';
+    else if (st.trans === 'later') t = '<b>Registro solo l\'audio.</b> Puoi passare al Quaderno: la registrazione continua. A fine lezione premi <b>Ferma</b>, qui o dal Quaderno; poi tieni aperta la scheda per la trascrizione.';
+    else if (st.trans === 'cloud') t = '<b>Registro e trascrivo in cloud</b> (serve la rete). Il testo compare qui sotto ogni 15 secondi circa. Puoi passare al Quaderno. A fine lezione premi <b>Ferma</b>.';
+    else if (st.trans === 'offline') t = '<b>Registro e trascrivo sul dispositivo.</b> Il testo compare qui sotto con ritardo. Puoi passare al Quaderno. A fine lezione premi <b>Ferma</b> e tieni aperta la scheda finché la coda finisce.';
+    else t = '<b>Registro col riconoscimento del browser.</b> Tieni questa scheda in primo piano; se passi al Quaderno continuo col modello sul dispositivo. A fine lezione premi <b>Ferma</b>.';
+    if (t !== nowLast) { nowLast = t; el.innerHTML = t; }
+    el.hidden = false;
+  }
   $('#retr').onclick = () => transcribeRecorded();
   $('#stop').onclick = stop;
   $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
@@ -841,19 +949,17 @@
   function applyOnly() {
     const pref = lessonTitle ? 'Lezione: ' + lessonTitle + ' · ' : '';
     if (only === 'audio') {
-      $('#startText').style.display = 'none';
-      $('#start').innerHTML = '&#9679; Registra (solo audio)';
-      document.title = 'Registratore audio'; $('#sub').textContent = pref + 'Solo audio (nessuna trascrizione)';
-      $('#live').innerHTML = '<span class="hint">Premi Registra: registra solo l\'audio. Per il testo dal vivo apri l\'altra scheda (solo testo).</span>';
+      document.title = 'Registratore audio'; $('#sub').textContent = pref + 'Scheda audio (il testo dal vivo sta nell\'altra scheda)';
+      $('#live').innerHTML = '<span class="hint">Questa scheda registra l\'audio. Per il testo dal vivo apri l\'altra scheda (solo testo).</span>';
     } else if (only === 'text') {
-      $('#start').style.display = 'none'; $('#startLive').style.display = 'none'; $('#startCloud').style.display = 'none';
-      $('#startText').innerHTML = 'Aa Trascrivi';
-      document.title = 'Trascrizione'; $('#sub').textContent = pref + 'Solo testo (nessun audio)';
-      $('#live').innerHTML = '<span class="hint">Premi Trascrivi: qui compare il testo mentre parli, senza registrare l\'audio.</span>';
+      document.title = 'Trascrizione'; $('#sub').textContent = pref + 'Scheda testo (nessun audio)';
+      $('#live').innerHTML = '<span class="hint">Premi Registra: qui compare il testo mentre parli, senza registrare l\'audio.</span>';
     }
+    if (!curMode) curMode = isAndroid ? 'later' : 'browser'; // prima volta: la modalità più adatta al dispositivo
+    pickMode(curMode, false);
     // link alle due pagine mono-modalità, sempre visibili: da una scheda apri l'altra
-    const intro = only ? 'Apri l\'altra modalità in una seconda scheda: '
-      : 'Su Android non puoi avere audio e testo nella stessa pagina. Tienili in <strong>due schede</strong>: ';
+    const intro = only ? 'Apri l\'altra scheda: '
+      : 'Serve solo se vuoi il riconoscimento del browser dal vivo su Android, dove non parte mentre si registra: si tengono <strong>due schede</strong>, una registra l\'audio e l\'altra fa il testo. Con le modalità qui sopra non serve. ';
     $('#splitLinks').innerHTML = intro
       + '<a href="' + esc(withOnly('audio')) + '" target="_blank" rel="noopener">📼 solo audio ↗</a> &nbsp;·&nbsp; '
       + '<a href="' + esc(withOnly('text')) + '" target="_blank" rel="noopener">🅰 solo testo ↗</a>'
@@ -957,7 +1063,7 @@
     const key = cloudKey(); const el = $('#cloudState');
     if (!key) { el.textContent = 'Nessuna chiave: la trascrizione in cloud non è attiva.'; return; }
     el.textContent = 'Provo la chiave con ' + cloudCfg(key).name + '…';
-    try { const a = new Float32Array(16000); for (let i = 0; i < a.length; i++) a[i] = Math.sin(i / 16000 * 2 * Math.PI * 440) * 0.2; await cloudTranscribe(a, 16000); el.textContent = 'Chiave valida (' + cloudCfg(key).name + ', ' + cloudCfg(key).model + '): "Registra + trascrivi in cloud" è pronto.'; }
+    try { const a = new Float32Array(16000); for (let i = 0; i < a.length; i++) a[i] = Math.sin(i / 16000 * 2 * Math.PI * 440) * 0.2; await cloudTranscribe(a, 16000); el.textContent = 'Chiave valida (' + cloudCfg(key).name + ', ' + cloudCfg(key).model + '): la modalità «Registra e trascrivi in cloud» è pronta.'; }
     catch (e) { el.textContent = 'Prova non riuscita: ' + (e.message || e); }
   }
   async function loadASR(model, onProg, fallbackModel) {
@@ -1136,7 +1242,7 @@
   function modelName() { return MODEL_NAMES[$('#offModel').value] || 'modello sul dispositivo'; }
   async function transcribeRecorded() {
     if (!st.parts.length || st.active) return;
-    if ($('#offModel').value === CLOUD && !cloudKey()) { toast('Per il cloud inserisci prima la chiave API, oppure scegli un modello sul dispositivo'); $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if ($('#offModel').value === CLOUD && !cloudKey()) { toast('Per il cloud inserisci prima la chiave API, oppure scegli un modello sul dispositivo'); $('#cloudCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     if (jobs.some(j => j.own)) { toast('La trascrizione di questa registrazione è già in corso o in coda'); return; }
     const files = st.parts.map((p, i) => Object.assign(p.blob, { name: 'parte-' + String(i + 1).padStart(3, '0') }));
     const linked = !!(st.savedId && st.linked);
@@ -1158,9 +1264,9 @@
   checkEnv();
   if (avoid.big) $('#offModel').value = LIVE_FAST;
   $('#cloudKey').value = cloudKey();
-  $('#cloudKey').addEventListener('input', e => { const v = e.target.value.trim(); try { if (v) localStorage.setItem(CLOUD_KEY, v); else localStorage.removeItem(CLOUD_KEY); } catch (x) {} if (asrModel === CLOUD) { asr = null; asrModel = null; } $('#cloudState').textContent = v ? 'Chiave salvata su questo dispositivo (' + cloudCfg(v).name + '). Premi "Prova la chiave" per verificarla.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.'; });
+  $('#cloudKey').addEventListener('input', e => { const v = e.target.value.trim(); try { if (v) localStorage.setItem(CLOUD_KEY, v); else localStorage.removeItem(CLOUD_KEY); } catch (x) {} if (asrModel === CLOUD) { asr = null; asrModel = null; } $('#cloudState').textContent = v ? 'Chiave salvata su questo dispositivo (' + cloudCfg(v).name + '). Premi "Prova la chiave" per verificarla.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.'; renderModes(); });
   $('#cloudTest').onclick = cloudCheck;
-  $('#cloudState').textContent = cloudKey() ? 'Chiave salvata (' + cloudCfg(cloudKey()).name + '): "Registra + trascrivi in cloud" è pronto.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.';
+  $('#cloudState').textContent = cloudKey() ? 'Chiave salvata (' + cloudCfg(cloudKey()).name + '): la modalità «Registra e trascrivi in cloud» è pronta.' : 'Nessuna chiave: la trascrizione in cloud non è attiva.';
   if (avoid.crashed) $('#warn').insertAdjacentHTML('beforeend', '<div class="notice">L\'ultima volta la pagina si &egrave; chiusa mentre caricava il modello di trascrizione' + (avoid.crashed.device === 'webgpu' ? ' sulla GPU: d\'ora in poi qui uso il processore (WASM)' : ' &ldquo;' + esc(String(avoid.crashed.model).replace('Xenova/whisper-', '')) + '&rdquo;: d\'ora in poi qui uso il modello veloce (tiny)') + '. L\'audio della registrazione interrotta, se c\'era, &egrave; recuperabile qui sotto.</div>');
   if (lessonTitle && !only) $('#sub').textContent = 'Lezione: ' + lessonTitle;
   applyOnly(); baseTitle = document.title; renderTasks();
