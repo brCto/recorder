@@ -355,7 +355,7 @@
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
-  const OPENER_OK = o => /^https:\/\/[a-z0-9-]+\.frame\.claudeusercontent\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
+  const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
   // se questa scheda è stata aperta da un'altra scheda del registratore (le due schede "solo audio"/"solo testo"),
   // il Quaderno è chi ha aperto quella: si risale di un livello (stessa origine, quindi leggibile)
@@ -377,7 +377,8 @@
     catch (e) { return false; }
   }
   addEventListener('message', ev => {
-    const d = ev.data; if (!d || d.source !== 'quaderno' || !OPENER_OK(ev.origin)) return;
+    const d = ev.data; if (!d || d.source !== 'quaderno') return;
+    if (!OPENER_OK(ev.origin)) { if (st.badOrigin !== ev.origin) { st.badOrigin = ev.origin; renderLink(); } return; }
     if (d.type === 'ack') {
       st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; setVocab(d.vocab); renderLink();
       if (d.resend && st.active && st.segments.length) send('segments', { segments: st.segments });
@@ -410,8 +411,11 @@
     const el = $('#link'); el.classList.toggle('on', st.linked);
     const nv = vocabList().length;
     $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
-      : (peer() ? 'In attesa del Quaderno… (se non si collega, a fine registrazione usa Copia e Salva)' : 'Aperto da solo: a fine registrazione copia la trascrizione e salva l\'audio, poi caricali nel Quaderno');
+      : st.badOrigin ? 'Il Quaderno risponde da ' + st.badOrigin + ', un indirizzo che questa pagina non riconosce: la registrazione funziona, ma audio e testo vanno poi caricati a mano. Segnala questo messaggio.'
+      : peer() ? (Date.now() - pageStart > 8000 ? 'Il Quaderno non risponde. Torna sulla sua scheda e ricaricala, poi riapri il registratore da lì. Puoi comunque registrare: a fine lezione usa Copia e Salva.' : 'In attesa del Quaderno…')
+      : 'Non collegato al Quaderno: questa scheda è stata aperta senza legame con la sua. Succede aprendo il link dall\'app Claude per Android o da un segnalibro: apri il Quaderno in Chrome e da lì premi "Registra dal tablet". Puoi comunque registrare: a fine lezione salva audio e testo e caricali nel Quaderno.';
   }
+  const pageStart = Date.now(); setTimeout(() => { if (!st.linked) renderLink(); }, 8500);
   send('hello', { active: false });
   // il ping tiene vivo il collegamento e lo ricostruisce se il Quaderno è stato ricaricato
   setInterval(() => { if (!send('ping', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() })) { if (st.linked && !peer()) { st.linked = false; renderLink(); } } }, 10000);
