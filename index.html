@@ -97,7 +97,7 @@
 </head>
 <body>
 
-<h1>Registratore del Quaderno</h1>
+<h1>Registratore del Quaderno <small id="ver" style="font-size:12px;font-weight:400;opacity:.6"></small></h1>
 <p class="sub" id="sub">Registra la lezione e trascrivila: audio e testo tornano nel Quaderno da soli.</p>
 
 <div id="warn"></div>
@@ -354,6 +354,9 @@
   const readMeta = () => { try { return JSON.parse(localStorage.getItem(META)); } catch (e) { return null; } };
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
+  // versione mostrata accanto al titolo, per capire quale copia della pagina sta girando
+  const VERSION = '2026-09-30.3';
+  $('#ver').textContent = 'v ' + VERSION;
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
@@ -382,7 +385,8 @@
     const d = ev.data; if (!d || d.source !== 'quaderno') return;
     if (!OPENER_OK(ev.origin)) { if (st.badOrigin !== ev.origin) { st.badOrigin = ev.origin; renderLink(); } return; }
     if (ev.source && ev.source !== window) st.peerWin = ev.source;
-    if (d.type === 'hello') { if (!st.linked) { st.quadernoOrigin = ev.origin; send('hello', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() }); } return; }
+    if (d.v) st.qVer = d.v;
+    if (d.type === 'hello') { st.qCalls = (st.qCalls || 0) + 1; renderLink(); if (!st.linked) { st.quadernoOrigin = ev.origin; send('hello', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() }); } return; }
     if (d.type === 'ack') {
       st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; setVocab(d.vocab); renderLink();
       if (d.resend && st.active && st.segments.length) send('segments', { segments: st.segments });
@@ -414,10 +418,11 @@
   function renderLink() {
     const el = $('#link'); el.classList.toggle('on', st.linked);
     const nv = vocabList().length;
-    $('#linkText').textContent = st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
+    const diag = ' [apritore: ' + (window.opener ? 'sì' : 'no') + ' · chiamate dal Quaderno: ' + (st.qCalls || 0) + (st.qVer ? ' · Quaderno v ' + st.qVer : '') + ']';
+    $('#linkText').textContent = (st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
       : st.badOrigin ? 'Il Quaderno risponde da ' + st.badOrigin + ', un indirizzo che questa pagina non riconosce: la registrazione funziona, ma audio e testo vanno poi caricati a mano. Segnala questo messaggio.'
       : peer() ? (Date.now() - pageStart > 8000 ? 'Il Quaderno non risponde. Torna sulla sua scheda e ricaricala, poi riapri il registratore da lì. Puoi comunque registrare: a fine lezione usa Copia e Salva.' : 'In attesa del Quaderno…')
-      : 'Non collegato al Quaderno: questa scheda è stata aperta senza legame con la sua. Succede aprendo il link dall\'app Claude per Android o da un segnalibro: apri il Quaderno in Chrome e da lì premi "Registra dal tablet". Puoi comunque registrare: a fine lezione salva audio e testo e caricali nel Quaderno.';
+      : 'Non collegato al Quaderno: questa scheda è stata aperta senza legame con la sua. Succede aprendo il link dall\'app Claude per Android o da un segnalibro: apri il Quaderno in Chrome e da lì premi "Registra dal tablet". Puoi comunque registrare: a fine lezione salva audio e testo e caricali nel Quaderno.') + diag;
   }
   const pageStart = Date.now(); setTimeout(() => { if (!st.linked) renderLink(); }, 8500);
   send('hello', { active: false });
