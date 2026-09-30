@@ -355,7 +355,7 @@
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
   // versione mostrata accanto al titolo, per capire quale copia della pagina sta girando
-  const VERSION = '2026-09-30.3';
+  const VERSION = '2026-09-30.4';
   $('#ver').textContent = 'v ' + VERSION;
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
