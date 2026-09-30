@@ -102,6 +102,7 @@
 
 <div id="warn"></div>
 <div class="card link" id="link"><i></i><span id="linkText">Quaderno non collegato</span></div>
+<div class="card" id="demoCard"><div class="row" style="align-items:center"><button id="demo">Crea un file di prova</button><span class="hint">Per provare il passaggio al Quaderno senza registrare: prepara un file con qualche secondo di suoni e un testo di esempio. Poi nel Quaderno, scheda Registrazione della lezione, tocca &laquo;Carica registrazione&raquo; e sceglilo.</span></div></div>
 
 <div class="card" id="tasksCard" hidden>
   <div class="tasks-h"><strong id="tasksSum">Trascrizioni</strong><button id="tasksClear" hidden>Togli le finite</button></div>
@@ -175,6 +176,7 @@
 
 <div class="card" id="out" hidden>
   <div class="row">
+    <button class="primary" id="pack">Salva per il Quaderno</button>
     <button class="primary" id="send" hidden>Invia al Quaderno</button>
     <button id="retr" hidden title="Trascrive con calma tutto l'audio appena registrato col modello scelto in alto; il testo sostituisce quello della diretta, anche nel Quaderno">Trascrivi di nuovo tutto l'audio</button>
     <button id="copy">Copia la trascrizione</button>
@@ -355,10 +357,8 @@
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
   // versione mostrata accanto al titolo, per capire quale copia della pagina sta girando
-  const VERSION = '2026-09-30.5';
+  const VERSION = '2026-09-30.6';
   $('#ver').textContent = 'v ' + VERSION;
-  // prova del ponte (bridge.html incorporata nel Quaderno): risponde ai ping sul canale condiviso del sito
-  try { const bbc = new BroadcastChannel('quaderno-bridge'); bbc.onmessage = ev => { if (ev.data && ev.data.type === 'ping') { st.bridgePings = (st.bridgePings || 0) + 1; bbc.postMessage({ type: 'pong', v: VERSION }); renderLink(); } }; } catch (e) {}
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
@@ -420,11 +420,10 @@
   function renderLink() {
     const el = $('#link'); el.classList.toggle('on', st.linked);
     const nv = vocabList().length;
-    const diag = ' [apritore: ' + (window.opener ? 'sì' : 'no') + ' · chiamate dal Quaderno: ' + (st.qCalls || 0) + ' · ponte: ' + (st.bridgePings || 0) + (st.qVer ? ' · Quaderno v ' + st.qVer : '') + ']';
     $('#linkText').textContent = (st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
       : st.badOrigin ? 'Il Quaderno risponde da ' + st.badOrigin + ', un indirizzo che questa pagina non riconosce: la registrazione funziona, ma audio e testo vanno poi caricati a mano. Segnala questo messaggio.'
       : peer() ? (Date.now() - pageStart > 8000 ? 'Il Quaderno non risponde. Torna sulla sua scheda e ricaricala, poi riapri il registratore da lì. Puoi comunque registrare: a fine lezione usa Copia e Salva.' : 'In attesa del Quaderno…')
-      : 'Non collegato al Quaderno: questa scheda è stata aperta senza legame con la sua. Succede aprendo il link dall\'app Claude per Android o da un segnalibro: apri il Quaderno in Chrome e da lì premi "Registra dal tablet". Puoi comunque registrare: a fine lezione salva audio e testo e caricali nel Quaderno.') + diag;
+      : 'Registra qui come sempre. A fine lezione, quando la trascrizione è finita, premi «Salva per il Quaderno»: esce un solo file con audio e testo. Nel Quaderno apri la lezione, scheda Registrazione, e tocca «Carica registrazione». (Dentro claude.ai il Quaderno e questa scheda non possono parlarsi direttamente.)');
   }
   const pageStart = Date.now(); setTimeout(() => { if (!st.linked) renderLink(); }, 8500);
   send('hello', { active: false });
@@ -456,13 +455,12 @@
     const sendBtn = $('#send'); sendBtn.hidden = !st.linked || !has; sendBtn.disabled = st.sent; sendBtn.textContent = st.sent ? 'Inviata al Quaderno ✓' : 'Invia al Quaderno';
     $('#audio').hidden = !st.parts.length; // in "solo trascrizione" non c'è audio da salvare
     const busy = jobs.some(j => j.own), retr = $('#retr');
+    const pk = $('#pack'); pk.hidden = !!(st.linked && !st.sent); pk.disabled = busy || !!st.live; pk.textContent = busy || st.live ? 'Attendi la fine della trascrizione…' : 'Salva per il Quaderno';
     retr.hidden = !st.parts.length || st.mode !== 'full'; retr.disabled = busy;
     retr.textContent = busy ? 'Trascrizione in corso…' : st.segments.length ? 'Trascrivi di nuovo tutto l\'audio' : 'Trascrivi tutto l\'audio';
     $('#outHint').textContent = (st.live ? 'Sto ancora finendo la trascrizione sul dispositivo: tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : busy ? 'La trascrizione di tutto l\'audio è in corso (avanzamento nel riquadro «Trascrizioni» in alto): tieni aperta questa scheda, il testo arriva al Quaderno da solo. ' : '') + (st.sent ? (busy ? 'Il Quaderno ha già l\'audio; il testo lo raggiunge appena pronto.' : 'Il Quaderno ha salvato la registrazione: puoi chiudere questa scheda.')
       : st.linked ? 'Se il Quaderno non l\'ha già ricevuta, premi "Invia al Quaderno". In alternativa: copia la trascrizione' + (st.parts.length ? ' e salva l\'audio' : '') + ', poi nel Quaderno "Carica audio" e/o "Salva come segmenti".'
-      : (st.parts.length
-          ? 'Nel Quaderno: apri la lezione → scheda Registrazione → Carica audio (scegli il file salvato). Per il testo, incollalo nella casella sotto la registrazione → Salva come segmenti.'
-          : 'Solo testo: premi Copia la trascrizione, poi nel Quaderno apri la lezione → scheda Trascrizione → incolla nella casella → Salva come segmenti.'));
+      : 'Premi «Salva per il Quaderno»: un solo file con audio e testo finisce nei Download. Poi nel Quaderno: apri la lezione → scheda Registrazione → «Carica registrazione» e scegli quel file.');
   }
   function tick() { $('#timer').textContent = fmt((Date.now() - st.t0) / 1000); renderLive(); renderSaved(); renderNow(); if (st.live) liveTask(st.live); }
   function renderSaved() {
@@ -913,6 +911,49 @@
     if (t !== nowLast) { nowLast = t; el.innerHTML = t; }
     el.hidden = false;
   }
+  // ----- pacchetto per il Quaderno: un .zip con quaderno.json (lezione, tempi, segmenti) e le parti audio così come sono.
+  // Il Quaderno lo apre con "Carica registrazione" e lo salva come una registrazione arrivata dal registratore.
+  const JSZIP = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  const loadJsZip = () => window.JSZip ? Promise.resolve() : new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = JSZIP; sc.onload = res; sc.onerror = () => rej(new Error('libreria zip non raggiungibile')); document.head.appendChild(sc); });
+  const slugify = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'lezione';
+  async function buildPackage(info) {
+    await loadJsZip();
+    const zip = new JSZip(); const files = [];
+    info.parts.forEach((p, i) => { const name = 'parte-' + (i + 1) + (/mp4/.test(p.blob.type) ? '.m4a' : '.webm'); zip.file(name, p.blob, { compression: 'STORE' }); files.push({ file: name, durationSec: p.durationSec, type: p.blob.type || 'audio/webm' }); });
+    zip.file('quaderno.json', JSON.stringify({ format: 'quaderno-registrazione', version: 1, recorder: VERSION, lessonId: info.lessonId || null, lessonTitle: info.lessonTitle || '', t0: info.t0, durationSec: info.durationSec, segments: info.segments, gaps: info.gaps || [], parts: files, demo: !!info.demo }, null, 1));
+    return zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
+  }
+  $('#pack').onclick = async () => {
+    if (!st.parts.length && !st.segments.length) return toast('Non c\'è niente da salvare');
+    const b = $('#pack'); b.disabled = true; b.textContent = 'Preparo il file…';
+    try {
+      const blob = await buildPackage({ lessonId, lessonTitle: st.linkTitle || lessonTitle, t0: st.t0, durationSec: st.dur, segments: st.segments, gaps: st.gaps, parts: st.parts });
+      download(blob, 'quaderno-' + stamp() + '-' + slugify(st.linkTitle || lessonTitle) + '.zip');
+      toast('File salvato nei Download: nel Quaderno tocca «Carica registrazione»');
+    } catch (e) { toast('File non creato: ' + (e.message || e)); }
+    renderOut();
+  };
+  // file di prova: 6 secondi di note generate qui (niente microfono) e tre frasi d'esempio
+  $('#demo').onclick = async () => {
+    const b = $('#demo'); b.disabled = true; b.textContent = 'Preparo il file di prova (6 s)…';
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)(); const dest = ac.createMediaStreamDestination();
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+      const mr = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined); const chunks = [];
+      mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      const done = new Promise(r => { mr.onstop = r; });
+      mr.start();
+      [523, 659, 784, 659, 523, 392].forEach((f, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = f; g.gain.value = 0.15; o.connect(g); g.connect(dest); o.start(ac.currentTime + i); o.stop(ac.currentTime + i + 0.8); });
+      await new Promise(r => setTimeout(r, 6200)); mr.stop(); await done; ac.close();
+      const t0 = Date.now() - 6200;
+      const blob = await buildPackage({ lessonId, lessonTitle: lessonTitle || 'Prova', t0, durationSec: 6, demo: true,
+        segments: [{ t: 0, text: 'Questa è una registrazione di prova del registratore.' }, { t: 2, text: 'Il teorema di Lagrange dice che esiste un punto in cui la derivata è uguale al rapporto incrementale.' }, { t: 4, text: 'Se leggi queste frasi nel Quaderno, il passaggio funziona.' }],
+        parts: [{ blob: new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }), durationSec: 6 }] });
+      download(blob, 'quaderno-prova-' + stamp() + '.zip');
+      toast('File di prova salvato nei Download: nel Quaderno tocca «Carica registrazione»');
+    } catch (e) { toast('File di prova non creato: ' + (e.message || e)); }
+    b.disabled = false; b.textContent = 'Crea un file di prova';
+  };
   $('#retr').onclick = () => transcribeRecorded();
   $('#stop').onclick = stop;
   $('#send').onclick = () => { if (!deliver()) toast('Quaderno non raggiungibile: usa Copia e Salva'); else toast('Inviata al Quaderno…'); };
