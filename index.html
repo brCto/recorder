@@ -359,7 +359,9 @@
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
   // se questa scheda è stata aperta da un'altra scheda del registratore (le due schede "solo audio"/"solo testo"),
   // il Quaderno è chi ha aperto quella: si risale di un livello (stessa origine, quindi leggibile)
+  // se la scheda è stata aperta senza legame (opener vuoto), il Quaderno la chiama lui con "hello": si usa chi ha scritto
   const peer = () => {
+    if (st.peerWin && !st.peerWin.closed) return st.peerWin;
     let w = (window.opener && !window.opener.closed) ? window.opener : (window.parent !== window ? window.parent : null);
     try { if (w && w.location.origin === location.origin && w.opener && !w.opener.closed) w = w.opener; } catch (e) {}
     return w;
@@ -379,6 +381,8 @@
   addEventListener('message', ev => {
     const d = ev.data; if (!d || d.source !== 'quaderno') return;
     if (!OPENER_OK(ev.origin)) { if (st.badOrigin !== ev.origin) { st.badOrigin = ev.origin; renderLink(); } return; }
+    if (ev.source && ev.source !== window) st.peerWin = ev.source;
+    if (d.type === 'hello') { if (!st.linked) { st.quadernoOrigin = ev.origin; send('hello', { active: st.active, segments: st.segments.length, cloud: !!cloudKey() }); } return; }
     if (d.type === 'ack') {
       st.quadernoOrigin = ev.origin; st.linked = true; st.linkTitle = d.title || lessonTitle; setVocab(d.vocab); renderLink();
       if (d.resend && st.active && st.segments.length) send('segments', { segments: st.segments });
