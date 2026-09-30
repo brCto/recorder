@@ -355,8 +355,10 @@
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
   // versione mostrata accanto al titolo, per capire quale copia della pagina sta girando
-  const VERSION = '2026-09-30.4';
+  const VERSION = '2026-09-30.5';
   $('#ver').textContent = 'v ' + VERSION;
+  // prova del ponte (bridge.html incorporata nel Quaderno): risponde ai ping sul canale condiviso del sito
+  try { const bbc = new BroadcastChannel('quaderno-bridge'); bbc.onmessage = ev => { if (ev.data && ev.data.type === 'ping') { st.bridgePings = (st.bridgePings || 0) + 1; bbc.postMessage({ type: 'pong', v: VERSION }); renderLink(); } }; } catch (e) {}
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
   // il Quaderno è la scheda che ha aperto questa; se invece la pagina è incorporata, è il frame che la contiene
@@ -418,7 +420,7 @@
   function renderLink() {
     const el = $('#link'); el.classList.toggle('on', st.linked);
     const nv = vocabList().length;
-    const diag = ' [apritore: ' + (window.opener ? 'sì' : 'no') + ' · chiamate dal Quaderno: ' + (st.qCalls || 0) + (st.qVer ? ' · Quaderno v ' + st.qVer : '') + ']';
+    const diag = ' [apritore: ' + (window.opener ? 'sì' : 'no') + ' · chiamate dal Quaderno: ' + (st.qCalls || 0) + ' · ponte: ' + (st.bridgePings || 0) + (st.qVer ? ' · Quaderno v ' + st.qVer : '') + ']';
     $('#linkText').textContent = (st.linked ? 'Collegato al Quaderno' + (st.linkTitle ? ' · ' + st.linkTitle : '') + ': trascrizione e audio arrivano da soli' + (nv ? ' · vocabolario del corso: ' + nv + ' termini (Whisper in cloud e riconoscimento del browser)' : '')
       : st.badOrigin ? 'Il Quaderno risponde da ' + st.badOrigin + ', un indirizzo che questa pagina non riconosce: la registrazione funziona, ma audio e testo vanno poi caricati a mano. Segnala questo messaggio.'
       : peer() ? (Date.now() - pageStart > 8000 ? 'Il Quaderno non risponde. Torna sulla sua scheda e ricaricala, poi riapri il registratore da lì. Puoi comunque registrare: a fine lezione usa Copia e Salva.' : 'In attesa del Quaderno…')
