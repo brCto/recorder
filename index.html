@@ -102,7 +102,6 @@
 
 <div id="warn"></div>
 <div class="card link" id="link"><i></i><span id="linkText">Quaderno non collegato</span></div>
-<div class="card" id="demoCard"><div class="row" style="align-items:center"><button id="demo">Crea un file di prova</button><span class="hint">Per provare il passaggio al Quaderno senza registrare: prepara un file con qualche secondo di suoni e un testo di esempio. Poi nel Quaderno, scheda Registrazione della lezione, tocca &laquo;Carica registrazione&raquo; e sceglilo.</span></div></div>
 
 <div class="card" id="tasksCard" hidden>
   <div class="tasks-h"><strong id="tasksSum">Trascrizioni</strong><button id="tasksClear" hidden>Togli le finite</button></div>
@@ -169,7 +168,8 @@
   <p class="hint" id="offState" style="margin:10px 0 0"></p>
   <div class="live" id="offOut" hidden></div>
   <div class="row" id="offActions" hidden style="margin-top:10px">
-    <button class="primary" id="offCopy">Copia la trascrizione</button>
+    <button class="primary" id="offPack">Salva per il Quaderno</button>
+    <button id="offCopy">Copia la trascrizione</button>
     <button id="offTxt">Salva il testo</button>
   </div>
 </div>
@@ -357,7 +357,7 @@
   const clearMeta = () => { try { localStorage.removeItem(META); } catch (e) {} };
 
   // versione mostrata accanto al titolo, per capire quale copia della pagina sta girando
-  const VERSION = '2026-09-30.6';
+  const VERSION = '2026-10-01.1';
   $('#ver').textContent = 'v ' + VERSION;
   // ----- collegamento col Quaderno (la scheda che ha aperto questa) -----
   const OPENER_OK = o => /^https:\/\/([a-z0-9-]+\.)+(claudeusercontent|claudemcpcontent)\.com$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
@@ -920,7 +920,7 @@
     await loadJsZip();
     const zip = new JSZip(); const files = [];
     info.parts.forEach((p, i) => { const name = 'parte-' + (i + 1) + (/mp4/.test(p.blob.type) ? '.m4a' : '.webm'); zip.file(name, p.blob, { compression: 'STORE' }); files.push({ file: name, durationSec: p.durationSec, type: p.blob.type || 'audio/webm' }); });
-    zip.file('quaderno.json', JSON.stringify({ format: 'quaderno-registrazione', version: 1, recorder: VERSION, lessonId: info.lessonId || null, lessonTitle: info.lessonTitle || '', t0: info.t0, durationSec: info.durationSec, segments: info.segments, gaps: info.gaps || [], parts: files, demo: !!info.demo }, null, 1));
+    zip.file('quaderno.json', JSON.stringify({ format: 'quaderno-registrazione', version: 1, recorder: VERSION, lessonId: info.lessonId || null, lessonTitle: info.lessonTitle || '', t0: info.t0, durationSec: info.durationSec, segments: info.segments, gaps: info.gaps || [], parts: files, recId: info.recId || null }, null, 1));
     return zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
   }
   $('#pack').onclick = async () => {
@@ -932,27 +932,6 @@
       toast('File salvato nei Download: nel Quaderno tocca «Carica registrazione»');
     } catch (e) { toast('File non creato: ' + (e.message || e)); }
     renderOut();
-  };
-  // file di prova: 6 secondi di note generate qui (niente microfono) e tre frasi d'esempio
-  $('#demo').onclick = async () => {
-    const b = $('#demo'); b.disabled = true; b.textContent = 'Preparo il file di prova (6 s)…';
-    try {
-      const ac = new (window.AudioContext || window.webkitAudioContext)(); const dest = ac.createMediaStreamDestination();
-      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
-      const mr = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined); const chunks = [];
-      mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-      const done = new Promise(r => { mr.onstop = r; });
-      mr.start();
-      [523, 659, 784, 659, 523, 392].forEach((f, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = f; g.gain.value = 0.15; o.connect(g); g.connect(dest); o.start(ac.currentTime + i); o.stop(ac.currentTime + i + 0.8); });
-      await new Promise(r => setTimeout(r, 6200)); mr.stop(); await done; ac.close();
-      const t0 = Date.now() - 6200;
-      const blob = await buildPackage({ lessonId, lessonTitle: lessonTitle || 'Prova', t0, durationSec: 6, demo: true,
-        segments: [{ t: 0, text: 'Questa è una registrazione di prova del registratore.' }, { t: 2, text: 'Il teorema di Lagrange dice che esiste un punto in cui la derivata è uguale al rapporto incrementale.' }, { t: 4, text: 'Se leggi queste frasi nel Quaderno, il passaggio funziona.' }],
-        parts: [{ blob: new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }), durationSec: 6 }] });
-      download(blob, 'quaderno-prova-' + stamp() + '.zip');
-      toast('File di prova salvato nei Download: nel Quaderno tocca «Carica registrazione»');
-    } catch (e) { toast('File di prova non creato: ' + (e.message || e)); }
-    b.disabled = false; b.textContent = 'Crea un file di prova';
   };
   $('#retr').onclick = () => transcribeRecorded();
   $('#stop').onclick = stop;
@@ -1249,7 +1228,7 @@
   function askFiles(job) {
     taskSet(job.task, { state: 'waiting', note: 'il Quaderno non ha potuto passarmi l\'audio: scegli gli stessi file in "Trascrivi una registrazione"' });
     $('#offlineCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    showOff([], 'Il Quaderno chiede la trascrizione di «' + jobLabel(job) + '» ma non può passarmi l\'audio: scegli qui gli stessi file (anche più di uno insieme) e il testo torna nel Quaderno da solo.');
+    showOff([], 'Il Quaderno chiede la trascrizione di «' + jobLabel(job) + '» ma non può passarmi l\'audio: scegli qui gli stessi file (anche più di uno insieme). ' + (st.linked ? 'Il testo torna nel Quaderno da solo.' : 'A trascrizione finita premi «Salva per il Quaderno» e nel Quaderno «Carica registrazione».'));
   }
   const jobBlocker = () => st.active ? 'parte quando finisce la registrazione' : (st.live && !st.trDone) ? 'parte quando finisce la trascrizione in diretta' : offBusy ? 'parte quando finisce quella in corso' : '';
   function pumpJobs() {
@@ -1273,13 +1252,14 @@
         if (partial && partial.length) { showOff(partial, $('#offState').textContent); if (toQ && !job.quiet && Date.now() - lastSend > 4000) { lastSend = Date.now(); send('transcribed', { recId: job.recId, segments: partial, done: false, t0: job.t0 }); } }
       }, T);
       const segs = res.segments;
+      lastOff = { recId: job.recId, lessonId: job.lessonId, title: job.title || lessonTitle, name: job.name, segments: segs, durationSec: res.durationSec || 0 };
       if (job.own && segs.length) { st.segments = segs; st.trDone = true; renderLive(); if (!toQ) flushTranscribed(true); }
       if (job.kind === 'file' && segs.length && !st.active) { st.segments = segs; st.mode = 'file'; st.parts = []; st.sent = false; st.dur = res.durationSec; st.t0 = Date.now(); }
       const ok = toQ && send('transcribed', { recId: job.recId, segments: segs, done: true, t0: job.t0 });
-      const next = toQ ? (ok ? 'Trascrizione inviata al Quaderno: puoi tornare lì.' : 'Quaderno non raggiungibile: copia il testo e incollalo nella scheda Trascrizione.')
-        : st.linked && !st.active ? 'Premi "Invia al Quaderno" qui sopra, oppure copia il testo.' : 'Copia il testo e incollalo nel Quaderno (scheda Trascrizione → Salva come segmenti).';
+      const next = toQ ? (ok ? 'Trascrizione inviata al Quaderno: puoi tornare lì.' : 'Premi «Salva per il Quaderno» qui sotto, poi nel Quaderno «Carica registrazione»: il testo va sulla stessa registrazione.')
+        : st.linked && !st.active ? 'Premi "Invia al Quaderno" qui sopra, oppure copia il testo.' : 'Premi «Salva per il Quaderno» qui sotto, poi nel Quaderno «Carica registrazione».';
       showOff(segs, '«' + lbl + '»: ' + (segs.length ? 'fatto in ' + fmt(Math.round((Date.now() - t0) / 1000)) + ' · ' + segs.length + ' segmenti' + (blobs.length > 1 ? ' da ' + blobs.length + ' file' : '') + '. ' + next : 'nessun testo riconosciuto (audio troppo basso o vuoto).'));
-      taskSet(T, { state: 'done', segs: segs.length, frac: 1, note: !segs.length ? 'audio vuoto o troppo basso' : toQ ? (ok ? 'testo inviato al Quaderno ✓' : 'Quaderno non raggiungibile: copia il testo') : st.linked ? 'da inviare: premi "Invia al Quaderno"' : 'copia o salva il testo' });
+      taskSet(T, { state: 'done', segs: segs.length, frac: 1, note: !segs.length ? 'audio vuoto o troppo basso' : toQ ? (ok ? 'testo inviato al Quaderno ✓' : 'da portare nel Quaderno: «Salva per il Quaderno»') : st.linked ? 'da inviare: premi "Invia al Quaderno"' : 'copia o salva il testo' });
     } catch (e) {
       const err = String(e && (e.message || e));
       showOff([], '«' + lbl + '»: trascrizione non riuscita. ' + err + '.');
@@ -1312,7 +1292,17 @@
     const w = jobs.find(j => !j.files && !j.running && !j.fetching); // una richiesta del Quaderno aspetta proprio questi file
     if (w) { w.files = fs; taskSet(w.task, { state: 'queued', note: '', fileCount: fs.length }); pumpJobs(); } else transcribeFiles(fs);
   };
-  if (qs.get('transcribe')) { showOff([], 'Il Quaderno sta per passarmi l\'audio da trascrivere…'); $('#offlineCard').scrollIntoView({ block: 'start' }); }
+  // aperto da "Trascrivi sul tablet": dentro claude.ai il Quaderno non può passare l'audio, quindi si chiede di sceglierlo qui
+  if (qs.get('transcribe')) setTimeout(() => { if (!st.linked) startJob({ kind: 'quaderno', recId: qs.get('transcribe'), lessonId, title: lessonTitle }); else { showOff([], 'Il Quaderno sta per passarmi l\'audio da trascrivere…'); $('#offlineCard').scrollIntoView({ block: 'start' }); } }, 2500);
+  let lastOff = null;
+  $('#offPack').onclick = async () => {
+    if (!lastOff || !lastOff.segments.length) return toast('Nessuna trascrizione finita da salvare');
+    try {
+      const blob = await buildPackage({ recId: lastOff.recId, lessonId: lastOff.lessonId, lessonTitle: lastOff.title, t0: Date.now(), durationSec: lastOff.durationSec, segments: lastOff.segments, parts: [] });
+      download(blob, 'quaderno-' + stamp() + '-' + slugify(lastOff.title || lastOff.name) + '-testo.zip');
+      toast('File salvato nei Download: nel Quaderno tocca «Carica registrazione»');
+    } catch (e) { toast('File non creato: ' + (e.message || e)); }
+  };
   $('#offCopy').onclick = async () => { const t = offText(); if (!t) return; try { await navigator.clipboard.writeText(t); toast('Trascrizione copiata: incollala nel Quaderno'); } catch (e) { download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); toast('Appunti non disponibili: salvo il file di testo'); } };
   $('#offTxt').onclick = () => { const t = offText(); if (t) download(txtBlob(offSegs), 'trascrizione-' + stamp() + '.txt'); };
 
